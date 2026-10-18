@@ -55,7 +55,7 @@ enum {
     NEV_ENEMY_SHOT,   // i0 = enemy idx (client: firing feedback sound)
     NEV_ENEMY_DIE,    // i0 = enemy idx, a = death position (client feedback)
     NEV_NOISE,        // a = position (host: alert enemies)
-    NEV_MY_KILL,      // i0 = 1 headshot (confirmed kill by a remote, score it)
+    NEV_MY_KILL,      // i0 = 1 headshot, i1 = 1 elite kill (confirmed by a remote, score it)
 };
 
 typedef struct __attribute__((packed)) {
@@ -126,6 +126,7 @@ typedef struct {
     double lastHostRecv;
     bool   hostLost;
     float  connectTimer;      // client: hello retry
+    float  reconnectTimer;    // client: grace after host loss before reset
     float  sendTimer;
     uint16_t seq;
     NetPeer peers[NET_MAX_PLAYERS];   // index = id-1 (peers[0] = host slot)
@@ -178,7 +179,7 @@ void Net_SendEnemyHit(NetState* n, int enemyIdx, int zone, float dmg, Vector3 hi
 void Net_SendDamageTo(NetState* n, int targetId, float dmg, bool head, Vector3 attackerPos, int attackerId);
 void Net_SendBarrelHit(NetState* n, int barrelIdx, float dmg);
 void Net_NotifyBarrel(NetState* n, int barrelIdx, Vector3 pos);
-void Net_NotifyEnemyKilled(NetState* n, int killerId, bool head);
+void Net_NotifyEnemyKilled(NetState* n, int killerId, bool head, bool elite);
 void Net_SendNoise(NetState* n, Vector3 pos);
 void Net_RequestPickup(NetState* n, int idx);
 void Net_NoteLocalPickup(NetState* n, int idx);

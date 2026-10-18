@@ -10,10 +10,20 @@ typedef struct {
     bool flinched;
 } HitResult;
 
+// Host/SP enemy brain targets: one entry per living player (the local one plus
+// a stub per remote peer). Each enemy picks its own nearest visible target.
+typedef struct {
+    Player* player;
+    bool    moving;    // anim/accuracy hints (from the owner's state)
+    bool    airborne;
+    bool    isLocal;   // hurt feedback (flash/indicator/sound) belongs to this machine
+} EnemyTarget;
+
 void Enemy_InitAll(Enemy* enemies, int count);
-void Enemy_UpdateAll(Enemy* enemies, int count, Player* player, const Box* boxes, int boxCount,
-                     Audio* audio, float dt, DamageIndicator* dmgInds, int maxDmgInds,
-                     float* damageFlashOut, float gameTime, bool playerMoving, bool playerAirborne);
+void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
+                     const Box* boxes, int boxCount, Audio* audio, float dt,
+                     DamageIndicator* dmgInds, int maxDmgInds,
+                     float* damageFlashOut, float gameTime);
 void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos, float time, bool fakeBlobs);
 void Enemy_AlertAll(Enemy* enemies, int count, Vector3 gunPos, float radius);
 

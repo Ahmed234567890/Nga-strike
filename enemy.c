@@ -182,11 +182,12 @@ static bool FindCover(Enemy* e, Vector3 playerEye, const Box* boxes, int boxCoun
     return false;
 }
 
-void Enemy_UpdateAll(Enemy* enemies, int count, Player* player, const Box* boxes, int boxCount,
-                     Audio* audio, float dt, DamageIndicator* dmgInds, int maxDmgInds,
-                     float* damageFlashOut, float gameTime, bool playerMoving, bool playerAirborne) {
+void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
+                     const Box* boxes, int boxCount, Audio* audio, float dt,
+                     DamageIndicator* dmgInds, int maxDmgInds,
+                     float* damageFlashOut, float gameTime) {
+    if (targetCount < 1) return;
     float ramp = 1.0f + ClampF(gameTime / 60.0f * 0.08f, 0.0f, 0.6f);
-    Vector3 playerEye = PlayerEyePos(player);
 
     // count alive for pack tactics
     int aliveN = 0;
@@ -208,6 +209,30 @@ void Enemy_UpdateAll(Enemy* enemies, int count, Player* player, const Box* boxes
         float aimTarget = (!e->alive) ? 0.0f
                         : ((e->aimTimer > 0.2f || e->burstLeft > 0) ? 1.0f : 0.0f);
         e->aimBlend += (aimTarget - e->aimBlend) * ClampF(dt * 7.0f, 0.0f, 1.0f);
+
+        // pick this enemy's target: nearest living player, biased toward ones
+        // it can actually see. The local player and each remote peer (via a
+        // stub fed from its net state) compete here, per enemy, every frame.
+        int tbest = 0;
+        float tbestScore = 1e30f;
+        {
+            Vector3 ee = EnemyEyePos(e);
+            float seer = (e->alertTimer > 0) ? 44.0f : 30.0f;
+            if (e->role == ROLE_MARKSMAN) seer += 8.0f;
+            for (int k = 0; k < targetCount; k++) {
+                const EnemyTarget* t = &targets[k];
+                if (t->player->health <= 0) continue;
+                float d = Vector3DistanceSqr(e->position, t->player->position);
+                float score = d;
+                if (targetCount > 1 && (!e->alive || d > seer * seer ||
+                    !World_LOS(ee, PlayerEyePos(t->player), boxes, boxCount)))
+                    score += 400.0f; // unseen targets lose to visible ones
+                if (score < tbestScore) { tbestScore = score; tbest = k; }
+            }
+        }
+        const EnemyTarget* tgt = &targets[tbest];
+        Player* player = tgt->player;          // this enemy's chosen opponent
+        Vector3 playerEye = PlayerEyePos(player);
 
         if (!e->alive) {
             if (e->deathTimer > 0) e->deathTimer -= dt;
@@ -312,9 +337,11 @@ void Enemy_UpdateAll(Enemy* enemies, int count, Player* player, const Box* boxes
             if (!dead && dist < meleeRange + 0.7f) {
                 float mdmg = ENEMY_MELEE_DMG * ramp * e->dmgMul * (e->role == ROLE_RUSHER ? 1.25f : 1.0f);
                 if (Player_TakeDamage(player, mdmg)) {
-                    if (damageFlashOut) *damageFlashOut = 0.5f;
-                    DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
-                    PlaySoundPitched(audio->playerHurt, 0.75f + RandomFloat() * 0.2f);
+                    if (tgt->isLocal) {
+                        if (damageFlashOut) *damageFlashOut = 0.5f;
+                        DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
+                        PlaySoundPitched(audio->playerHurt, 0.75f + RandomFloat() * 0.2f);
+                    }
                     Vector3 away = (dist > 0.01f) ? Vector3Scale(toPlayer, -1.4f / dist) : (Vector3){ 0 };
                     player->position.x = ClampF(player->position.x + away.x * 0.18f, -MAP_LIMIT, MAP_LIMIT);
                     player->position.z = ClampF(player->position.z + away.z * 0.18f, -MAP_LIMIT, MAP_LIMIT);
@@ -473,9 +500,11 @@ void Enemy_UpdateAll(Enemy* enemies, int count, Player* player, const Box* boxes
             if (stillThere && realLos && dist < ENEMY_SHOOT_RANGE + 5.0f) {
                 float dd = ENEMY_SHOOT_DMG * 0.6f * ramp * e->dmgMul;
                 if (Player_TakeDamage(player, dd)) {
-                    if (damageFlashOut) *damageFlashOut = 0.4f;
-                    DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
-                    PlaySoundPitched(audio->playerHurt, 0.8f + RandomFloat() * 0.15f);
+                    if (tgt->isLocal) {
+                        if (damageFlashOut) *damageFlashOut = 0.4f;
+                        DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
+                        PlaySoundPitched(audio->playerHurt, 0.8f + RandomFloat() * 0.15f);
+                    }
                 }
             }
         }
@@ -508,17 +537,19 @@ void Enemy_UpdateAll(Enemy* enemies, int count, Player* player, const Box* boxes
                     acc *= 1.0f - ClampF(latSpeed / 16.0f, 0.0f, 0.30f);
                     acc *= 1.0f + ClampF(e->visibleTimer * 0.04f, 0.0f, 0.18f);
                     if (pSpeed < 0.5f) acc *= 1.15f; // camping is punished
-                    if (playerMoving) acc *= 0.85f;
-                    if (playerAirborne) acc *= 0.62f;
+                    if (tgt->moving) acc *= 0.85f;
+                    if (tgt->airborne) acc *= 0.62f;
                     if (Vector3Length(sep) > 0.5f) acc *= 0.85f;
                     if (e->flinchTimer > 0) acc *= 0.6f;
                     acc = ClampF(acc, 0.05f, 0.92f);
                     if (RandomFloat() < acc) {
                         float dd = ENEMY_SHOOT_DMG * ramp * e->dmgMul;
                         if (Player_TakeDamage(player, dd)) {
-                            if (damageFlashOut) *damageFlashOut = 0.35f;
-                            DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
-                            PlaySoundPitched(audio->playerHurt, 0.85f + RandomFloat() * 0.15f);
+                            if (tgt->isLocal) {
+                                if (damageFlashOut) *damageFlashOut = 0.35f;
+                                DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
+                                PlaySoundPitched(audio->playerHurt, 0.85f + RandomFloat() * 0.15f);
+                            }
                         }
                     }
                     PlaySoundPitched(audio->shotAKR, 0.7f + RandomFloat() * 0.1f);

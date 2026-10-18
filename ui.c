@@ -35,7 +35,7 @@ void UI_DrawCrosshair(float gap, bool ads, bool scoped) {
 
 void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
                 int curWeapon, bool reloading, float reloadT,
-                int kills, int score, float gameTime, float adsBlend) {
+                int kills, int score, float gameTime, float adsBlend, bool mp) {
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     (void)weapons; (void)reloadT; (void)adsBlend;
 
@@ -90,7 +90,9 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
         DrawText(phase, bx + bw - MeasureText(phase, 16) , by - 22, 16, (Color){ 255, 220, 130, 230 });
     }
 
-    DrawText("WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | ESC MENU | F6 SHADOWS",
+    // LAN games have no local pause menu (it would freeze the net pump)
+    DrawText(mp ? "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | F6 SHADOWS"
+                : "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | ESC MENU | F6 SHADOWS",
              20, sh - 32, 15, (Color){ 220, 220, 220, 160 });
     DrawFPS(sw - 90, 10);
     DrawText(TextFormat("%.1f ms", GetFrameTime() * 1000.0f), sw - 110, 30, 16, (Color){ 200, 200, 200, 200 });

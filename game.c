@@ -122,7 +122,7 @@ static void ExplodeBarrel(Game* g, int idx, Vector3 hitPos, int credit, bool fro
     Barrel* b = &g->barrels[idx];
     if (!b->alive) return;
     b->alive = false;
-    b->respawnTimer = 18.0f;
+    b->respawnTimer = BARREL_RESPAWN_TIME;
     Vector3 c = { b->position.x, 0.9f, b->position.z };
     FX_SpawnExplosion(g->particles, MAX_PARTICLES, c, 5);
     FX_AddDecal(g->decals, MAX_DECALS, (Vector3){ c.x, 0.10f, c.z }, 1.8f, (Color){ 15, 12, 10, 230 }, &g->decalCursor);
@@ -149,11 +149,11 @@ static void ExplodeBarrel(Game* g, int idx, Vector3 hitPos, int credit, bool fro
                 if (r.killed) {
                     PlaySoundPitched(g->audio.enemyDie, 0.9f + RandomFloat() * 0.2f);
                     if (!g->net.active || credit == g->net.myId) {
-                        g->kills++; g->score += 100;
+                        g->kills++; g->score += e->elite ? 200 : 100;
                         g->hitMarkerType = 3; g->hitMarkerTimer = HITMARKER_TIME;
                     } else if (g->net.mode == NET_HOST) {
                         // a client shot this barrel: credit their scoreboard
-                        Net_NotifyEnemyKilled(&g->net, credit, false);
+                        Net_NotifyEnemyKilled(&g->net, credit, false, e->elite);
                     }
                 }
             }
@@ -365,7 +365,7 @@ static void Game_Fire(Game* g, Weapon* w, Vector3 forward) {
                 g->hitMarkerType = isHead ? 4 : 3;
                 g->trauma = fminf(1.0f, g->trauma + (isHead ? 0.18f : 0.1f));
                 if (g->net.active && g->net.mode == NET_HOST)
-                    Net_NotifyEnemyKilled(&g->net, g->net.myId, isHead);
+                    Net_NotifyEnemyKilled(&g->net, g->net.myId, isHead, e->elite);
             } else {
                 g->hitMarkerType = isHead ? 2 : (zone == HIT_LEG ? 1 : 1);
             }
@@ -417,6 +417,18 @@ static void Game_ApplyNetEvents(Game* g) {
                 g->trauma = fminf(1.0f, g->trauma + 0.2f);
                 g->net.lastAttackerId = e->i1;
                 g->net.lastAttackerTime = 5.0f;
+                if (e->i1 <= 0 && g->net.mode == NET_CLIENT) {
+                    // enemy damage: mirror the host sim's melee shove locally
+                    // (the victim is dragged a little toward the striker)
+                    Vector3 toE = Vector3Subtract(e->a, g->player.position);
+                    toE.y = 0;
+                    float sd = Vector3Length(toE);
+                    if (sd > 0.01f && sd < ENEMY_MELEE_RANGE + 1.7f) {
+                        Vector3 shove = Vector3Scale(toE, 1.4f * 0.18f / sd);
+                        g->player.position.x = ClampF(g->player.position.x + shove.x, -MAP_LIMIT, MAP_LIMIT);
+                        g->player.position.z = ClampF(g->player.position.z + shove.z, -MAP_LIMIT, MAP_LIMIT);
+                    }
+                }
             }
             break;
         }
@@ -436,7 +448,7 @@ static void Game_ApplyNetEvents(Game* g) {
                 FX_SpawnBlood(g->particles, MAX_PARTICLES, en->position, 10);
                 FX_AddDecal(g->decals, MAX_DECALS, (Vector3){ en->position.x, 0.10f, en->position.z },
                             0.5f, (Color){ 140, 10, 10, 180 }, &g->decalCursor);
-                Net_NotifyEnemyKilled(&g->net, e->i2, zone == HIT_HEAD);
+                Net_NotifyEnemyKilled(&g->net, e->i2, zone == HIT_HEAD, en->elite);
             }
             break;
         }
@@ -476,16 +488,19 @@ static void Game_ApplyNetEvents(Game* g) {
         }
         case NEV_MY_KILL: {
             bool head = e->i0 != 0;
+            bool elite = e->i1 != 0;
             g->kills++;
-            g->score += head ? 150 : 100;
-            g->hitMarkerType = head ? 4 : 3;
-            g->hitMarkerTimer = HITMARKER_TIME;
             if (head) {
+                // score this kill's headshot like the shooting host does:
+                // count it into the streak first, then pay out the bonus
                 g->headshots++;
                 g->headshotStreak++;
                 g->headshotStreakTimer = 4.0f;
                 g->headshotBanner = 1.4f;
             }
+            g->score += (head ? 150 + g->headshotStreak * 25 : 100) + (elite ? 100 : 0);
+            g->hitMarkerType = head ? 4 : 3;
+            g->hitMarkerTimer = HITMARKER_TIME;
             PlaySoundPitched(g->audio.enemyDie, 0.9f + RandomFloat() * 0.2f);
             break;
         }
@@ -690,64 +705,58 @@ void Game_Update(Game* g, float dt) {
     g->sway.y += (tgt.y - g->sway.y) * (1.0f - expf(-10.0f * dt));
 
     // Enemy AI: single-player + host simulate it; clients mirror snapshots.
-    // On the host, enemies fight the *nearest* player -- when that is a remote
-    // peer we run the AI against a stub Player at their position and ship the
-    // health delta to their machine as damage.
+    // Each enemy picks its own target every frame: the local player plus one
+    // stub Player per living remote peer (fed from their net state). Damage
+    // the sim deals to a stub is shipped to that client as a damage event.
     bool enemySim = !g->net.active || g->net.mode == NET_HOST;
     if (enemySim) {
-        Player stub;
-        int targetId = 0;
-        if (g->net.active && g->net.mode == NET_HOST && Net_HasPeers(&g->net)) {
-            Vector3 spots[NET_MAX_PLAYERS + 1];
-            int ids[NET_MAX_PLAYERS + 1];
-            int np = 0;
-            spots[np] = g->player.position; ids[np] = 0; np++;
+        EnemyTarget tgts[NET_MAX_PLAYERS];
+        Player stubs[NET_MAX_PLAYERS];
+        float beforeHp[NET_MAX_PLAYERS];
+        int tgtIds[NET_MAX_PLAYERS];
+        int nt = 0;
+        tgts[nt].player = &g->player;
+        tgts[nt].moving = g->moving;
+        tgts[nt].airborne = !g->player.grounded;
+        tgts[nt].isLocal = true;
+        tgtIds[nt] = -1;
+        nt++;
+        if (g->net.active && g->net.mode == NET_HOST) {
             for (int i = 0; i < NET_MAX_PLAYERS; i++) {
                 const NetPeer* p = &g->net.peers[i];
                 if (!p->used || p->id == g->net.myId) continue;
                 if (!(p->flags & NETF_ALIVE)) continue;
-                spots[np] = p->targetPos; ids[np] = p->id; np++;
-            }
-            float bestD = 1e30f;
-            int bestId = 0;
-            for (int a = 0; a < np; a++) {
-                for (int i = 0; i < MAX_ENEMIES; i++) {
-                    if (!g->enemies[i].alive) continue;
-                    float d = Vector3DistanceSqr(g->enemies[i].position, spots[a]);
-                    if (d < bestD) { bestD = d; bestId = ids[a]; }
-                }
-            }
-            if (bestId != 0) {
-                const NetPeer* tp = &g->net.peers[bestId - 1];
-                stub = g->player;
-                stub.position = tp->targetPos;
-                stub.velocity = (Vector3){ 0, 0, 0 };
-                stub.grounded = true;
-                stub.health = tp->health;
-                stub.spawnProtect = 0;
-                targetId = bestId;
+                Player* st = &stubs[nt];
+                *st = g->player;
+                st->position = p->targetPos;
+                st->velocity = (Vector3){ 0, 0, 0 };
+                st->grounded = true;
+                st->health = p->health;
+                st->spawnProtect = 0;
+                tgts[nt].player = st;
+                tgts[nt].moving = (p->flags & NETF_MOVING) != 0;
+                tgts[nt].airborne = false;
+                tgts[nt].isLocal = false;
+                tgtIds[nt] = p->id;
+                nt++;
             }
         }
-        if (targetId == 0) {
-            Enemy_UpdateAll(g->enemies, MAX_ENEMIES, &g->player, g->boxes, g->boxCount,
-                            &g->audio, dt, g->dmgInds, MAX_DAMAGE_INDICATORS,
-                            &g->damageFlash, g->gameTime, g->moving, !g->player.grounded);
-        } else {
-            float before = stub.health;
-            DamageIndicator dummy[1];
-            float dummyFlash = 0;
-            Enemy_UpdateAll(g->enemies, MAX_ENEMIES, &stub, g->boxes, g->boxCount,
-                            &g->audio, dt, dummy, 1, &dummyFlash, g->gameTime, false, false);
-            float dealt = before - stub.health;
+        for (int k = 0; k < nt; k++) beforeHp[k] = tgts[k].player->health;
+        Enemy_UpdateAll(g->enemies, MAX_ENEMIES, tgts, nt, g->boxes, g->boxCount,
+                        &g->audio, dt, g->dmgInds, MAX_DAMAGE_INDICATORS,
+                        &g->damageFlash, g->gameTime);
+        for (int k = 1; k < nt; k++) {
+            float dealt = beforeHp[k] - tgts[k].player->health;
             if (dealt > 0.01f) {
-                Vector3 ap = stub.position;
+                // nearby strike direction for the victim's damage indicator
+                Vector3 ap = tgts[k].player->position;
                 float bd = 1e30f;
                 for (int i = 0; i < MAX_ENEMIES; i++) {
                     if (!g->enemies[i].alive) continue;
-                    float d = Vector3DistanceSqr(g->enemies[i].position, stub.position);
+                    float d = Vector3DistanceSqr(g->enemies[i].position, tgts[k].player->position);
                     if (d < bd) { bd = d; ap = g->enemies[i].position; }
                 }
-                Net_SendDamageTo(&g->net, targetId, dealt, false, ap, 0);
+                Net_SendDamageTo(&g->net, tgtIds[k], dealt, false, ap, 0);
             }
         }
     }
@@ -780,7 +789,21 @@ void Game_Update(Game* g, float dt) {
     if (g->net.active && g->net.localDead) {
         g->net.respawnTimer -= dt;
         if (g->net.respawnTimer <= 0) {
+            // first spawn point not occupied by a living remote (falls back to
+            // the round-robin pick when everyone is clustered)
             int sp = (g->net.myId - 1 + g->net.selfDeaths) % NET_MAX_PLAYERS;
+            for (int k = 0; k < NET_MAX_PLAYERS; k++) {
+                int c = (sp + k) % NET_MAX_PLAYERS;
+                Vector3 cp = Net_SpawnPos(c);
+                bool taken = false;
+                for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+                    const NetPeer* pr = &g->net.peers[i];
+                    if (!pr->used || pr->id == g->net.myId) continue;
+                    if ((pr->flags & NETF_ALIVE) &&
+                        Vector3Distance(pr->targetPos, cp) < 2.0f) { taken = true; break; }
+                }
+                if (!taken) { sp = c; break; }
+            }
             Vector3 rp = Net_SpawnPos(sp);
             g->player.position = rp;
             g->player.velocity = (Vector3){ 0, 0, 0 };
@@ -1117,7 +1140,7 @@ void Game_Draw(Game* g) {
     Weapon_DrawHitMarker(g->hitMarkerTimer, g->hitMarkerType);
     UI_DrawHUD(&g->player, w, g->weapons, g->curWeapon, g->reloading,
                g->reloading ? g->reloadPrevT : 0,
-               g->kills, g->score, g->gameTime, g->adsBlend);
+               g->kills, g->score, g->gameTime, g->adsBlend, g->net.active);
     UI_DrawNetHud(&g->net, g->camera, g->gameTime, g->kills);
     UI_DrawHeadshotBanner(g->headshotBanner, g->headshotStreak, g->headshots);
 

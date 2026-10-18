@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 // ---------------------------------------------------------------------------
 // Little-endian packed wire structs (same binary on both ends; LAN only).
@@ -61,7 +62,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     PktHdr h;
-    uint8_t killer, victim, kind, head;
+    uint8_t killer, victim, kind, head, elite;
 } PktKill;
 
 typedef struct __attribute__((packed)) {
@@ -234,6 +235,12 @@ static bool net_is_stale(NetState* n, int from, uint16_t seq) {
     return false;
 }
 
+// LAN hardening: reject damage values a sane weapon cannot produce (the NaN
+// case fails both compares and is rejected too).
+static bool net_dmg_ok(float d) {
+    return d >= 0.0f && d <= 1000.0f;
+}
+
 // ---------------------------------------------------------------------------
 // Event senders (called from game.c)
 // ---------------------------------------------------------------------------
@@ -301,7 +308,7 @@ static void net_feed_kill(NetState* n, int killer, int victim, int kind, bool he
     Net_Feed(n, t);
 }
 
-void Net_NotifyEnemyKilled(NetState* n, int killerId, bool head) {
+void Net_NotifyEnemyKilled(NetState* n, int killerId, bool head, bool elite) {
     if (!n->active || n->mode != NET_HOST) return;
     net_feed_kill(n, killerId, -1, 1, head);
     PktKill pk;
@@ -310,6 +317,7 @@ void Net_NotifyEnemyKilled(NetState* n, int killerId, bool head) {
     pk.victim = 0;
     pk.kind = 1;
     pk.head = head ? 1 : 0;
+    pk.elite = elite ? 1 : 0;
     net_send_event(n, &pk, (int)sizeof(pk), 0);
 }
 
@@ -342,6 +350,7 @@ void Net_SendKill(NetState* n, int killerId, int kind, bool head) {
     pk.victim = (uint8_t)n->myId;
     pk.kind = (uint8_t)kind;
     pk.head = head ? 1 : 0;
+    pk.elite = 0;
     net_send_event(n, &pk, (int)sizeof(pk), 0);
 }
 
@@ -500,6 +509,26 @@ static void client_send_state(NetState* n, const NetLocalState* me) {
     net_send_hostaddr(n, &pk, (int)sizeof(pk));
 }
 
+// The host went silent: drop back to the join handshake and keep retrying.
+// Mirrored peers are cleared so they cannot linger as ghosts; the world mirror
+// re-populates from the first snapshots after the handshake completes.
+static void client_begin_reconnect(NetState* n) {
+    n->connected = false;
+    n->hostLost = false;
+    n->serverFull = false;
+    n->reconnectTimer = 0.0f;
+    n->connectTimer = 0.0f;
+    n->lastHostRecv = n->netTime;
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        memset(&n->peers[i], 0, sizeof(n->peers[i]));
+        n->peers[i].id = i + 1;
+    }
+    for (int i = 0; i < MAX_ENEMIES; i++) n->esnapHave[i] = false;
+    Net_Feed(n, "RECONNECTING...");
+    TraceLog(LOG_INFO, "NET: host lost, retrying connection");
+    client_send_hello(n);
+}
+
 // ---------------------------------------------------------------------------
 // Packet handling
 // ---------------------------------------------------------------------------
@@ -517,6 +546,18 @@ static void host_peer_drop(NetState* n, int id, const char* why) {
     }
     Net_Feed(n, t);
     p->used = false;
+    // Tell the *other* clients this player is gone, otherwise they keep a
+    // ghost copy until the id gets reused. The seq is one past everything
+    // the peers could have seen from that id, so it passes their stale-seq
+    // check while duplicates of this same bye still dedup away.
+    PktBye bye;
+    memset(&bye, 0, sizeof(bye));
+    net_fill_hdr(n, &bye.h, P_BYE);
+    bye.h.from = (uint8_t)id;
+    bye.h.seq = (uint16_t)(p->lastSeq + 1);
+    net_send_all(n, 0, &bye, (int)sizeof(bye));
+    net_send_all(n, 0, &bye, (int)sizeof(bye));
+    TraceLog(LOG_INFO, "NET: dropped peer %d (%s)", id, why[0] ? why : "quit");
 }
 
 static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const uint8_t* buf,
@@ -529,7 +570,20 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
     memcpy(&h, buf, sizeof(h));
     if (h.magic != NET_MAGIC) return;
 
-    if (n->mode == NET_CLIENT) n->lastHostRecv = n->netTime;
+    // liveness: only datagrams that actually come from the host keep a
+    // client's connection alive (a stray packet from elsewhere must not)
+    if (n->mode == NET_CLIENT) {
+        if (from->sin_addr.s_addr == n->host.sin_addr.s_addr &&
+            from->sin_port == n->host.sin_port) {
+            n->lastHostRecv = n->netTime;
+            if (n->hostLost) {
+                // the host answered before the reset deadline: keep playing
+                n->hostLost = false;
+                n->reconnectTimer = 0.0f;
+                Net_Feed(n, "HOST BACK ONLINE");
+            }
+        }
+    }
     if (n->mode == NET_HOST && h.from >= 1 && h.from <= NET_MAX_PLAYERS && h.from != n->myId)
         n->peers[h.from - 1].lastRecv = n->netTime;
 
@@ -563,14 +617,18 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         PktWelcome wp;
         memcpy(&wp, buf, sizeof(wp));
         if (wp.id == 0) {
-            n->serverFull = true;
-            TraceLog(LOG_WARNING, "NET: server full");
+            if (!n->serverFull) {
+                n->serverFull = true;
+                TraceLog(LOG_WARNING, "NET: server full");
+            }
             return;
         }
         if (!n->connected) {
             n->myId = wp.id;
             n->connected = true;
             n->hostLost = false;
+            n->serverFull = false;
+            n->reconnectTimer = 0.0f;
             n->pendingSpawn = wp.spawn;
             n->spawnApplied = false;
             TraceLog(LOG_INFO, "NET: connected as id %d (players: %d)", wp.id, wp.count);
@@ -587,6 +645,8 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
             p->addr.sin_port != from->sin_port) return;
         PktState st;
         memcpy(&st, buf, sizeof(st));
+        if (!isfinite(st.x) || !isfinite(st.y) || !isfinite(st.z) ||
+            !isfinite(st.yaw) || !isfinite(st.pitch)) return;
         Vector3 np = { st.x, st.y, st.z };
         if (!p->haveSnap) { p->prevPos = np; p->prevYaw = st.yaw; }
         else { p->prevPos = p->targetPos; p->prevYaw = p->targetYaw; }
@@ -595,7 +655,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         p->pitch = st.pitch;
         p->snapTime = n->netTime;
         p->haveSnap = true;
-        p->speed = Vector3Distance(p->targetPos, p->prevPos) / NET_SNAP_DT;
+        p->speed = Vector3Distance(p->targetPos, p->prevPos) / NET_STATE_DT;
         p->health = (float)st.health;
         p->weapon = st.weapon;
         p->flags = st.flags;
@@ -626,7 +686,6 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
                 p->health = (float)ps.health;
                 p->haveSnap = false;
             }
-            p->name[sizeof(ps.name)] = 0;
             memcpy(p->name, ps.name, sizeof(ps.name));
             p->name[sizeof(ps.name)] = 0;
             Vector3 np = { ps.x, ps.y, ps.z };
@@ -674,7 +733,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
             if (barrels[i].alive != hostAlive) {
                 barrels[i].alive = hostAlive;
                 barrels[i].health = BARREL_HEALTH;
-                barrels[i].respawnTimer = hostAlive ? 0.0f : 18.0f;
+                barrels[i].respawnTimer = hostAlive ? 0.0f : BARREL_RESPAWN_TIME;
             }
         }
         break;
@@ -683,6 +742,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         if (len < (int)sizeof(PktDamage)) return;
         PktDamage dp;
         memcpy(&dp, buf, sizeof(dp));
+        if (!net_dmg_ok(dp.dmg) || !isfinite(dp.ax + dp.ay + dp.az)) return;
         if (n->mode == NET_HOST) {
             if (dp.target == (uint8_t)n->myId) {
                 Vector3 from3 = { dp.ax, dp.ay, dp.az };
@@ -703,6 +763,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         PktEnemyHit ep;
         memcpy(&ep, buf, sizeof(ep));
         if (ep.idx >= MAX_ENEMIES) return;
+        if (!net_dmg_ok(ep.dmg) || !isfinite(ep.hx + ep.hy + ep.hz)) return;
         Vector3 hp = { ep.hx, ep.hy, ep.hz };
         net_push_event(n, NEV_ENEMY_HIT, hp, (Vector3){ 0 }, ep.idx, ep.zone, h.from, ep.dmg);
         break;
@@ -715,7 +776,8 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         bool myKill = kp.killer == (uint8_t)n->myId &&
                       ((kp.kind == 0 && kp.victim != (uint8_t)n->myId) || kp.kind == 1);
         if (myKill)
-            net_push_event(n, NEV_MY_KILL, (Vector3){ 0 }, (Vector3){ 0 }, kp.head ? 1 : 0, 0, 0, 0);
+            net_push_event(n, NEV_MY_KILL, (Vector3){ 0 }, (Vector3){ 0 },
+                           kp.head ? 1 : 0, kp.elite ? 1 : 0, 0, 0);
         if (n->mode == NET_HOST) {
             // behaviour relay: forward player-death announcements to others
             if (kp.kind == 0) {
@@ -745,6 +807,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         PktBarrelHit bh;
         memcpy(&bh, buf, sizeof(bh));
         if (bh.idx >= MAX_BARRELS) return;
+        if (!net_dmg_ok(bh.dmg)) return;
         net_push_event(n, NEV_BARREL_HIT, (Vector3){ 0 }, (Vector3){ 0 }, bh.idx, 0, h.from, bh.dmg);
         break;
     }
@@ -760,10 +823,15 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         if (n->mode != NET_HOST || len < (int)sizeof(PktPickup)) return;
         PktPickup pp;
         memcpy(&pp, buf, sizeof(pp));
-        if (pp.idx < (uint8_t)pc && pickups[pp.idx].active) {
-            pickups[pp.idx].active = false;
-            pickups[pp.idx].respawnTimer = PICKUP_RESPAWN_TIME;
-        }
+        if (pp.idx >= (uint8_t)pc || !pickups[pp.idx].active) return;
+        // only honour a consume request from a client that is actually near
+        // the item (blocks a desynced or lying peer from vacuuming the map)
+        if (h.from < 2 || h.from > NET_MAX_PLAYERS) return;
+        const NetPeer* p = &n->peers[h.from - 1];
+        if (!p->used) return;
+        if (Vector3Distance(p->targetPos, pickups[pp.idx].position) > PICKUP_RADIUS + 1.0f) return;
+        pickups[pp.idx].active = false;
+        pickups[pp.idx].respawnTimer = PICKUP_RESPAWN_TIME;
         break;
     }
     case P_BYE: {
@@ -776,6 +844,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
                 snprintf(t, sizeof(t), "%s LEFT", p->name[0] ? p->name : "PLAYER");
                 Net_Feed(n, t);
                 p->used = false;
+                TraceLog(LOG_INFO, "NET: peer %d left", h.from);
             }
         }
         break;
@@ -869,6 +938,11 @@ static void net_apply_enemies(NetState* n, Enemy* enemies, int count, float dt) 
             if (e->hurtTimer <= 0) e->hurtTimer = 0.13f;
             if (e->flinchTimer <= 0) e->flinchTimer = 0.10f;
         }
+        // aim/windup telegraphs: the snapshot carries them as edge flags, so
+        // re-arm the timers the draw code thresholds on (0.5 clears the >0.3
+        // "aiming" check and keeps the aim laser visible like the host's)
+        e->aimTimer = (c->flags & NETEF_AIMING) ? 0.5f : 0.0f;
+        e->windupTimer = (c->flags & NETEF_WINDING) ? 0.30f : 0.0f;
         if (c->firing) {
             if (e->muzzleFlash <= 0) {
                 if (n->netTime - n->enemyShotCd > 0.05f) {
@@ -926,8 +1000,15 @@ bool Net_Init(NetState* n) {
     } else {
         n->host.sin_family = AF_INET;
         n->host.sin_port = htons((uint16_t)g_cfgPort);
-        if (inet_pton(AF_INET, g_cfgAddr, &n->host.sin_addr) != 1)
+        if (inet_pton(AF_INET, g_cfgAddr, &n->host.sin_addr) != 1) {
             n->host.sin_addr.s_addr = inet_addr(g_cfgAddr);
+            if (n->host.sin_addr.s_addr == INADDR_NONE) {
+                TraceLog(LOG_WARNING, "NET: bad host address \"%s\", staying single-player", g_cfgAddr);
+                close(fd);
+                n->mode = NET_OFF;
+                return false;
+            }
+        }
         n->sock = fd;
         n->netTime = (float)GetTime();
         n->lastHostRecv = GetTime();
@@ -1002,9 +1083,14 @@ void Net_Update(NetState* n, float dt, const NetLocalState* me,
     } else if (n->connected && !n->hostLost) {
         if (GetTime() - n->lastHostRecv > NET_HOST_TIMEOUT) {
             n->hostLost = true;
+            n->reconnectTimer = 0.0f;
             Net_Feed(n, "HOST CONNECTION LOST");
             TraceLog(LOG_WARNING, "NET: host silent, connection stalled");
         }
+    } else if (n->hostLost) {
+        // brief grace for a hiccup, then fall back to the join handshake
+        n->reconnectTimer += dt;
+        if (n->reconnectTimer >= 2.0f) client_begin_reconnect(n);
     }
 
     for (int i = 0; i < NET_FEED_LINES; i++)
@@ -1019,9 +1105,11 @@ void Net_Update(NetState* n, float dt, const NetLocalState* me,
             host_send_snapshot(n, me, enemies, ec, pickups, pc, barrels, bc);
         }
     } else {
-        if (!n->connected && !n->serverFull) {
+        if (!n->connected) {
+            // full server: keep knocking, but slowly, in case a slot frees up
             n->connectTimer += dt;
-            if (n->connectTimer >= 0.6f) { n->connectTimer = 0; client_send_hello(n); }
+            float retry = n->serverFull ? 3.0f : 0.6f;
+            if (n->connectTimer >= retry) { n->connectTimer = 0; client_send_hello(n); }
         }
         if (n->connected && !n->hostLost && n->sendTimer >= NET_STATE_DT) {
             n->sendTimer = 0;

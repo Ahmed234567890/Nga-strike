@@ -30,11 +30,20 @@ int main(int argc, char** argv) {
             netMode = NET_HOST;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 netPort = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--join") == 0 && i + 1 < argc) {
-            netMode = NET_CLIENT;
-            snprintf(netAddr, sizeof(netAddr), "%s", argv[++i]);
-            char* colon = strchr(netAddr, ':');
-            if (colon) { *colon = 0; netPort = atoi(colon + 1); }
+        } else if (strcmp(argv[i], "--join") == 0) {
+            if (i + 1 >= argc) {
+                TraceLog(LOG_WARNING, "--join needs an IP[:port]; staying single-player");
+                netMode = NET_OFF;
+            } else {
+                netMode = NET_CLIENT;
+                snprintf(netAddr, sizeof(netAddr), "%s", argv[++i]);
+                char* colon = strchr(netAddr, ':');
+                if (colon) { *colon = 0; netPort = atoi(colon + 1); }
+                if (!netAddr[0]) {
+                    TraceLog(LOG_WARNING, "--join needs an IP[:port]; staying single-player");
+                    netMode = NET_OFF;
+                }
+            }
         } else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
             snprintf(netName, sizeof(netName), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {

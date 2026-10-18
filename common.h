@@ -51,6 +51,7 @@
 #define BARREL_HEALTH         60.0f
 #define BARREL_DAMAGE         170.0f
 #define BARREL_BLAST          8.0f
+#define BARREL_RESPAWN_TIME   18.0f
 
 typedef struct {
     Vector3 position;   // feet
