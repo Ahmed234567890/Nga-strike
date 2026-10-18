@@ -15,9 +15,9 @@ Play solo against AI enemies, or jump into a LAN match with up to 4 players — 
 - **Rendering** — dynamic shadow maps (off / low / high / ultra), colored point lights, distance fog, particles, tracers, bullet decals and animated first-person viewmodels.
 - **HUD** — health, kills, score, timer, reload/ammo display, hitmarkers, headshot banners, and directional damage indicators.
 
-## Multiplayer (LAN)
+## Multiplayer (LAN & internet)
 
-Up to **4 players** over a single UDP port (default **7777**), using a host-authoritative star topology — no dedicated server needed.
+Up to **4 players** over a single UDP port (default **7777**), using a host-authoritative star topology — no dedicated server needed. It works on your LAN out of the box; for the internet the host opens its port automatically via UPnP (see below).
 
 - The **host** runs the world simulation (enemies, barrels, pickups) and relays events; clients send their player state at 30 Hz and render everyone and everything else from host snapshots (20 Hz).
 - **Co-op and PvP in one mode** — everyone fights the same AI enemies, and players can damage each other. Watch your fire.
@@ -28,8 +28,9 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 ### Host a game
 
 ```sh
-./nga_strike --host            # host on UDP port 7777
+./nga_strike --host            # host on UDP port 7777 (also tries UPnP)
 ./nga_strike --host 9000       # host on a custom port
+./nga_strike --host --no-upnp  # never touch the router (LAN-only)
 ```
 
 ### Join a game
@@ -42,7 +43,25 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 
 `--name NAME` sets the name shown in the kill feed, scoreboard and overhead tags.
 
-> **Firewall:** allow inbound UDP 7777 (or your chosen port) on the host machine.
+### Playing over the internet (UPnP)
+
+When you host, the game automatically asks your router to forward its UDP port
+(UPnP), so friends outside your LAN can join without manual configuration:
+
+- On success it logs a ready-to-share command, e.g.
+  `NET: internet friends can join with: nga_strike --join 203.0.113.5:7777`.
+- The mapping is scoped tightly: only the game's one UDP port is touched, only
+  while hosting, it carries a 2-hour lease that is refreshed hourly, and it is
+  removed when you quit — a crash leaves at most the remaining lease.
+- `--no-upnp` disables all of this. If your router has UPnP off, or you are
+  behind CGNAT / double NAT, the game says so and stays LAN-only; in that case
+  a manual port forward (UDP 7777) or a mesh VPN like Tailscale/ZeroTier works.
+- Packets are only accepted from the address a player joined from, so an
+  internet-exposed host cannot be tricked into acting on behalf of another
+  player (no forged kicks, damage or kill events).
+
+> **Firewall:** allow inbound UDP 7777 (or your chosen port) on the host machine
+> and, if you forward manually, on the router.
 
 Running with no flags starts single-player, exactly as before.
 
@@ -68,6 +87,9 @@ Running with no flags starts single-player, exactly as before.
 
 - A C99 compiler (`cc`, `gcc` or `clang`)
 - [raylib](https://www.raylib.com/) installed system-wide (tested with 6.2.0)
+- [miniupnpc](https://miniupnp.tuxfamily.org/) — for automatic UPnP port mapping
+  when hosting over the internet (`miniupnpc` on Arch, `libminiupnpc-dev` on
+  Debian/Ubuntu)
 - [ninja](https://ninja-build.org/) (optional — see manual command below)
 - Linux / POSIX (the netcode uses POSIX UDP sockets)
 

@@ -1,4 +1,5 @@
 #include "net.h"
+#include "upnp.h"
 #include "raylib.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -99,6 +100,7 @@ static int  g_cfgMode = NET_OFF;
 static char g_cfgAddr[64] = "";
 static int  g_cfgPort = NET_PORT_DEFAULT;
 static char g_cfgName[16] = "";
+static bool g_cfgUpnp = true; // try to open the UDP port via UPnP when hosting
 
 void Net_Configure(int mode, const char* addr, int port, const char* name) {
     g_cfgMode = mode;
@@ -111,6 +113,10 @@ void Net_Configure(int mode, const char* addr, int port, const char* name) {
         for (char* c = g_cfgName; *c; c++) if (*c < 32 || *c > 126) *c = '?';
     }
 }
+
+// UPnP port mapping for internet hosting (see upnp.c). Enabled by default;
+// main() turns it off when --no-upnp is passed.
+void Net_SetUPnPEnabled(bool on) { g_cfgUpnp = on; }
 
 // ---------------------------------------------------------------------------
 // Spawns / colors / names
@@ -533,6 +539,18 @@ static void client_begin_reconnect(NetState* n) {
 // Packet handling
 // ---------------------------------------------------------------------------
 
+// Did this datagram actually come from the address a peer registered with at
+// HELLO? Host-side events (damage, hits, noise, pickups, BYE, kills) are only
+// honoured when the sender matches, so an internet-exposed host cannot be
+// tricked into acting on behalf of another player.
+static bool net_src_matches_peer(const NetState* n, const struct sockaddr_in* from, int id) {
+    if (id < 1 || id > NET_MAX_PLAYERS) return false;
+    const NetPeer* p = &n->peers[id - 1];
+    return p->used &&
+           p->addr.sin_addr.s_addr == from->sin_addr.s_addr &&
+           p->addr.sin_port == from->sin_port;
+}
+
 static void host_peer_drop(NetState* n, int id, const char* why) {
     if (id < 1 || id > NET_MAX_PLAYERS) return;
     NetPeer* p = &n->peers[id - 1];
@@ -570,22 +588,28 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
     memcpy(&h, buf, sizeof(h));
     if (h.magic != NET_MAGIC) return;
 
-    // liveness: only datagrams that actually come from the host keep a
-    // client's connection alive (a stray packet from elsewhere must not)
+    // ---- source validation (hardening for internet-exposed hosting) ----
+    // Clients only ever talk to the host, so anything not from the host's
+    // address is bogus. The host only honours datagrams claiming a player id
+    // when they come from that player's registered address - checked before
+    // any sequence/liveness bookkeeping, so a forged packet can neither
+    // impersonate a peer, poison its seq window, keep a ghost alive from
+    // elsewhere, nor kick anyone via P_BYE.
     if (n->mode == NET_CLIENT) {
-        if (from->sin_addr.s_addr == n->host.sin_addr.s_addr &&
-            from->sin_port == n->host.sin_port) {
-            n->lastHostRecv = n->netTime;
-            if (n->hostLost) {
-                // the host answered before the reset deadline: keep playing
-                n->hostLost = false;
-                n->reconnectTimer = 0.0f;
-                Net_Feed(n, "HOST BACK ONLINE");
-            }
+        if (from->sin_addr.s_addr != n->host.sin_addr.s_addr ||
+            from->sin_port != n->host.sin_port) return;
+        n->lastHostRecv = n->netTime;
+        if (n->hostLost) {
+            // the host answered before the reset deadline: keep playing
+            n->hostLost = false;
+            n->reconnectTimer = 0.0f;
+            Net_Feed(n, "HOST BACK ONLINE");
         }
+    } else if (n->mode == NET_HOST) {
+        if (h.from != 0 && !net_src_matches_peer(n, from, h.from)) return;
+        if (h.from >= 1 && h.from <= NET_MAX_PLAYERS && h.from != n->myId)
+            n->peers[h.from - 1].lastRecv = n->netTime;
     }
-    if (n->mode == NET_HOST && h.from >= 1 && h.from <= NET_MAX_PLAYERS && h.from != n->myId)
-        n->peers[h.from - 1].lastRecv = n->netTime;
 
     // duplicate / out-of-order suppression (unicast streams are ordered per
     // sender; hello has from=0 before ids are assigned and is idempotent)
@@ -748,9 +772,10 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
                 Vector3 from3 = { dp.ax, dp.ay, dp.az };
                 net_push_event(n, NEV_DAMAGE, from3, (Vector3){ 0 }, dp.head ? 1 : 0, dp.attacker, 0, dp.dmg);
             } else if (dp.target >= 2 && dp.target <= NET_MAX_PLAYERS) {
-                // relay to the victim, untouched (same seq for dedup)
-                net_send_peer(n, dp.target, buf, len);
-                net_send_peer(n, dp.target, buf, len);
+                // relay to the victim with the same seq (dedup), but clamped
+                // to the validated packet size - never forward trailing bytes
+                net_send_peer(n, dp.target, buf, (int)sizeof(PktDamage));
+                net_send_peer(n, dp.target, buf, (int)sizeof(PktDamage));
             }
         } else if (dp.target == (uint8_t)n->myId) {
             Vector3 from3 = { dp.ax, dp.ay, dp.az };
@@ -763,6 +788,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         PktEnemyHit ep;
         memcpy(&ep, buf, sizeof(ep));
         if (ep.idx >= MAX_ENEMIES) return;
+        if (ep.zone < 0 || ep.zone > HIT_HELMET) return;
         if (!net_dmg_ok(ep.dmg) || !isfinite(ep.hx + ep.hy + ep.hz)) return;
         Vector3 hp = { ep.hx, ep.hy, ep.hz };
         net_push_event(n, NEV_ENEMY_HIT, hp, (Vector3){ 0 }, ep.idx, ep.zone, h.from, ep.dmg);
@@ -786,8 +812,8 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
                     if (!p->used || p->id == n->myId) continue;
                     if (p->id == h.from) continue;   // not back to sender
                     if (p->id == kp.victim) continue; // victim already knows
-                    net_send_peer(n, p->id, buf, len);
-                    net_send_peer(n, p->id, buf, len);
+                    net_send_peer(n, p->id, buf, (int)sizeof(PktKill));
+                    net_send_peer(n, p->id, buf, (int)sizeof(PktKill));
                 }
             }
         }
@@ -815,6 +841,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         if (n->mode != NET_HOST || len < (int)sizeof(PktNoise)) return;
         PktNoise npk;
         memcpy(&npk, buf, sizeof(npk));
+        if (!isfinite(npk.x + npk.y + npk.z)) return;
         Vector3 np = { npk.x, npk.y, npk.z };
         net_push_event(n, NEV_NOISE, np, (Vector3){ 0 }, 0, 0, 0, 34.0f);
         break;
@@ -997,6 +1024,19 @@ bool Net_Init(NetState* n) {
         n->netTime = (float)GetTime();
         n->active = true;
         TraceLog(LOG_INFO, "NET: hosting on UDP port %d as \"%s\"", g_cfgPort, n->myName);
+        // Best-effort: open the same UDP port on the router so internet
+        // friends can join too. Failure just means LAN-only hosting.
+        if (g_cfgUpnp) {
+            char pubIP[46];
+            if (UPnP_MapPort(g_cfgPort, pubIP, sizeof(pubIP)) && pubIP[0]) {
+                if (g_cfgPort == NET_PORT_DEFAULT)
+                    TraceLog(LOG_INFO, "NET: internet friends can join with: nga_strike --join %s", pubIP);
+                else
+                    TraceLog(LOG_INFO, "NET: internet friends can join with: nga_strike --join %s:%d", pubIP, g_cfgPort);
+            }
+        } else {
+            TraceLog(LOG_INFO, "UPnP: disabled (--no-upnp), hosting is LAN-only");
+        }
     } else {
         n->host.sin_family = AF_INET;
         n->host.sin_port = htons((uint16_t)g_cfgPort);
@@ -1021,6 +1061,7 @@ bool Net_Init(NetState* n) {
 }
 
 void Net_Shutdown(NetState* n) {
+    UPnP_UnmapPort(); // no-op unless this session opened a router mapping
     if (!n->active) return;
     PktBye pk;
     net_fill_hdr(n, &pk.h, P_BYE);
@@ -1075,6 +1116,7 @@ void Net_Update(NetState* n, float dt, const NetLocalState* me,
 
     // liveness
     if (n->mode == NET_HOST) {
+        if (g_cfgUpnp) UPnP_Update(); // re-add the router mapping before its lease ends
         for (int i = 0; i < NET_MAX_PLAYERS; i++) {
             NetPeer* p = &n->peers[i];
             if (!p->used || p->id == n->myId) continue;

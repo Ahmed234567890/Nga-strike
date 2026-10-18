@@ -13,10 +13,12 @@
 #include <string.h>
 
 static void PrintUsage(void) {
-    TraceLog(LOG_INFO, "usage: nga_strike [--host [port]] [--join IP[:port]] [--name NAME]");
+    TraceLog(LOG_INFO, "usage: nga_strike [--host [port]] [--join IP[:port]] [--name NAME] [--no-upnp]");
     TraceLog(LOG_INFO, "  no flags        -> single-player (exactly as before)");
-    TraceLog(LOG_INFO, "  --host          -> LAN host (world authority) on UDP 7777");
-    TraceLog(LOG_INFO, "  --join 1.2.3.4  -> LAN client, connects to host (default port 7777)");
+    TraceLog(LOG_INFO, "  --host          -> host (world authority) on UDP 7777; opens the");
+    TraceLog(LOG_INFO, "                     port on the router via UPnP when possible");
+    TraceLog(LOG_INFO, "  --join 1.2.3.4  -> client, connects to host (default port 7777)");
+    TraceLog(LOG_INFO, "  --no-upnp       -> host only: don't ask the router to open the port");
 }
 
 int main(int argc, char** argv) {
@@ -46,6 +48,8 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
             snprintf(netName, sizeof(netName), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--no-upnp") == 0) {
+            Net_SetUPnPEnabled(false);
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             PrintUsage();
             return 0;

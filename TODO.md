@@ -70,11 +70,30 @@
       bad `--join` warns and falls back to single-player
 - [x] Cleanups: BARREL_RESPAWN_TIME constant, MP-aware HUD hint, dead code removal
 
+## Phase 9: Internet Hosting (UPnP) ✅ DONE
+- [x] `upnp.c/h` (miniupnpc): maps only the game's UDP port while hosting;
+      2 h lease refreshed hourly; removed on clean exit; `--no-upnp` opt-out;
+      CGNAT / double-NAT detection with a clear warning; logs a share-ready
+      `--join` line with the router's public address
+- [x] Packet source hardening: every peer-originated datagram must come from
+      the address the peer joined from (checked before seq/liveness
+      bookkeeping) — spoofed P_BYE can no longer kick a player, forged damage/
+      kill/noise events are rejected, seq windows can't be poisoned and ghost
+      peers can't be kept alive from elsewhere
+- [x] P_NOISE finiteness check, enemy-hit zone range check, relay byte clamps
+      (the host never forwards trailing bytes appended by a sender)
+- [x] Verified: MP regression unchanged; spoof/fuzz suite (garbage, truncated,
+      oversized, NaN, spoofed-from floods ~1000 datagrams) clean under
+      ASan+UBSan with the host still joinable afterwards; mapping add/verify/
+      remove exercised on a real router
+
 ## Open Items
 - [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
       frame, so enemies can't stand on platforms/raised geometry (they clip it).
       Needs a design pass plus on-platform visual testing.
 - [ ] **Custom keybinds** (leftover from Phase 5) — controls are fixed in code.
+- [ ] **Optional join password for internet hosting** (deferred from Phase 9) —
+      a shared secret in the HELLO, rejected on mismatch; empty = open like today.
 - [ ] _(Accepted risk)_ Relaying P_DAMAGE / P_KILL reuses the sender's seq number;
       a rare event can be dropped or duplicated. Impact is low, left as-is.
 

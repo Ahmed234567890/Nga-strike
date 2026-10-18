@@ -158,6 +158,11 @@ typedef struct {
 } NetState;
 
 void Net_Configure(int mode, const char* addr, int port, const char* name);
+
+// Enable/disable the automatic UPnP port mapping when hosting (default is
+// enabled; --no-upnp turns it off). See upnp.h for what it does and its
+// safety model.
+void Net_SetUPnPEnabled(bool on);
 bool Net_Init(NetState* n);
 void Net_Shutdown(NetState* n);
 void Net_Update(NetState* n, float dt, const NetLocalState* me,
