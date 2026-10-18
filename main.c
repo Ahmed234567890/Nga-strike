@@ -63,8 +63,10 @@ int main(int argc, char** argv) {
     int winW = kResOptions[st.resIndex].w;
     int winH = kResOptions[st.resIndex].h;
 
-    // Unlimited FPS: no VSYNC flag, target 0
-    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
+    // Uncapped by default (no VSYNC flag, target 0); the settings menu can
+    // enable VSYNC, which we honor here at window creation.
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE |
+                   (st.vsync ? FLAG_VSYNC_HINT : 0));
     InitWindow(winW, winH, "Nga-Strike");
     if (st.fullscreen) ToggleFullscreen();
     InitAudioDevice();
@@ -75,7 +77,7 @@ int main(int argc, char** argv) {
 
     Game g;
     Game_Init(&g);
-    TraceLog(LOG_INFO, "Nga-Strike start: %dx%d windowed=%d shadows=%d", GetScreenWidth(), GetScreenHeight(), !IsWindowFullscreen(), st.shadowQuality);
+    TraceLog(LOG_INFO, "Nga-Strike start: %dx%d windowed=%d shadows=%d vsync=%d", GetScreenWidth(), GetScreenHeight(), !IsWindowFullscreen(), st.shadowQuality, st.vsync ? 1 : 0);
     // apply persisted settings to the live game state
     g.set = st;
     g.sens = st.sens;

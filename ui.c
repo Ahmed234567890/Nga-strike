@@ -101,7 +101,7 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
 void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     int sw = GetScreenWidth(), sh = GetScreenHeight();
 
-    enum { MR_RES, MR_FULL, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG,
+    enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG,
            MR_RESUME, MR_QUIT, MR_COUNT };
     static int msel = 0;
     const int rowH = 36;
@@ -164,6 +164,12 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
                 SetWindowSize(kResOptions[g->set.resIndex].w, kResOptions[g->set.resIndex].h);
             changed = true;
             break;
+        case MR_VSYNC:
+            g->set.vsync = !g->set.vsync;
+            if (g->set.vsync) SetWindowState(FLAG_VSYNC_HINT);
+            else ClearWindowState(FLAG_VSYNC_HINT);
+            changed = true;
+            break;
         case MR_SHADOW:
             g->set.shadowQuality = (g->set.shadowQuality + act + 4) % 4;
             Shadow_SetQuality(&g->shadow, g->set.shadowQuality);
@@ -198,7 +204,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
 
     // ---- draw rows ----
     const char* labels[MR_COUNT] = {
-        "RESOLUTION", "FULLSCREEN", "SHADOWS", "FIELD OF VIEW",
+        "RESOLUTION", "FULLSCREEN", "VSYNC", "SHADOWS", "FIELD OF VIEW",
         "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG",
         "RESUME", "QUIT"
     };
@@ -225,6 +231,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         switch (i) {
         case MR_RES: snprintf(val, sizeof(val), "%d x %d", kResOptions[g->set.resIndex].w, kResOptions[g->set.resIndex].h); break;
         case MR_FULL: snprintf(val, sizeof(val), "%s", IsWindowFullscreen() ? "ON (MONITOR)" : "OFF"); break;
+        case MR_VSYNC: snprintf(val, sizeof(val), "%s", g->set.vsync ? "ON" : "OFF"); break;
         case MR_SHADOW:
             snprintf(val, sizeof(val), "%s",
                      g->shadow.available ? shadowNames[g->set.shadowQuality] : "N/A");

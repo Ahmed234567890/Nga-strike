@@ -126,6 +126,7 @@ Settings are stored in `nga.cfg` next to the game and saved whenever you change 
 | --- | --- |
 | Resolution | 1280×720, 1600×900, 1920×1080, 2560×1440 |
 | Fullscreen | on / off |
+| VSYNC | on / off (uncapped when off) |
 | Shadows | off / low / high / ultra |
 | Field of View | 50–110 |
 | Sensitivity | 0.0005–0.02 |

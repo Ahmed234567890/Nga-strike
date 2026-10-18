@@ -16,6 +16,7 @@ extern const int kResCount;
 typedef struct {
     int   resIndex;       // index into kResOptions
     bool  fullscreen;
+    bool  vsync;          // on / uncapped off (default off = same as before)
     int   shadowQuality;  // ShadowQuality (0..3)
     int   fov;            // base field of view (degrees)
     float sens;           // mouse sensitivity

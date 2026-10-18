@@ -10,6 +10,7 @@ const int kResCount = (int)(sizeof(kResOptions)/sizeof(kResOptions[0]));
 void Settings_Default(Settings* s) {
     s->resIndex = 0;
     s->fullscreen = false;
+    s->vsync = false;       // uncapped by default (same as before)
     s->shadowQuality = 3;   // ULTRA (4096 PCSS + lamp shadows) - "max" default
     s->fov = 70;
     s->sens = MOUSE_SENS;
@@ -30,6 +31,7 @@ void Settings_Load(Settings* s, const char* path) {
         if (sscanf(line, "%63s %d", key, &iv) == 2) {
             if (!strcmp(key, "res")) s->resIndex = iv;
             else if (!strcmp(key, "fullscreen")) s->fullscreen = (iv != 0);
+            else if (!strcmp(key, "vsync")) s->vsync = (iv != 0);
             else if (!strcmp(key, "shadows")) s->shadowQuality = iv;
             else if (!strcmp(key, "fov")) s->fov = iv;
             else if (!strcmp(key, "lights")) s->pointLights = (iv != 0);
@@ -55,6 +57,7 @@ void Settings_Save(const Settings* s, const char* path) {
     if (!f) return;
     fprintf(f, "res %d\n", s->resIndex);
     fprintf(f, "fullscreen %d\n", s->fullscreen ? 1 : 0);
+    fprintf(f, "vsync %d\n", s->vsync ? 1 : 0);
     fprintf(f, "shadows %d\n", s->shadowQuality);
     fprintf(f, "fov %d\n", s->fov);
     fprintf(f, "sens %.5f\n", s->sens);
