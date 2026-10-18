@@ -22,27 +22,65 @@
 - [x] Add LoadRenderTexture error check
 - [x] Guard UnloadSound calls with validity checks
 
-## Phase 4: Architecture - Split into Modules
-- [ ] Create header files: player.h, enemy.h, weapon.h, pickup.h, audio.h, world.h, ui.h, common.h
-- [ ] Split main.c into: main.c, player.c, enemy.c, weapon.c, pickup.c, audio.c, world.c, ui.c
-- [ ] Move structs to common.h
-- [ ] Create proper build.ninja with clean, debug/release configs
+## Phase 4: Architecture - Split into Modules ✅ DONE
+- [x] Create header files: player.h, enemy.h, weapon.h, pickup.h, audio.h, world.h, ui.h, common.h
+- [x] Split main.c into: main.c, player.c, enemy.c, weapon.c, pickup.c, audio.c, world.c, ui.c
+      (later grew: fx.c, damage_fx.c, shadows.c, settings.c, net.c)
+- [x] Move structs to common.h
+- [x] Create proper build.ninja with clean, debug/release configs
 
-## Phase 5: Quality of Life
-- [ ] Add config system (sensitivity, volume, FOV, keybinds)
-- [ ] Add settings menu
-- [ ] Add kill counter / score display
-- [ ] Add persistent config file (JSON or INI)
-- [ ] Improve sniper scope (actual zoom render)
-- [ ] Add footstep sound variation
+## Phase 5: Quality of Life ✅ DONE
+- [x] Add config system (sensitivity, volume, FOV, resolution, shadows, lights, fog)
+      — keybind remapping still not configurable (open item below)
+- [x] Add settings menu
+- [x] Add kill counter / score display
+- [x] Add persistent config file (nga.cfg, INI-style, sanitized on load)
+- [x] Improve sniper scope (actual zoom render + scope overlay)
+- [x] Add footstep sound variation (random pitch, quieter while sprinting)
 
-## Phase 6: Polish
-- [ ] Add particle effects (impacts, blood, casings)
-- [ ] Add weapon idle/inspect animations
-- [ ] Add enemy melee at close range
-- [ ] Add bullet tracers / impact decals
-- [ ] Pause audio on pause menu
+## Phase 6: Polish ✅ DONE
+- [x] Add particle effects (sparks, blood, head blood, smoke, muzzle smoke,
+      casings, pickup bursts, helmet pop, explosions, dust, dirt kicks)
+- [x] Add weapon idle/inspect animations
+- [x] Add enemy melee at close range (with wind-up telegraph)
+- [x] Add bullet tracers / impact decals
+- [x] Pause audio on pause menu (duck master volume while paused)
 
-## Missing Assets (need to be added)
-- hit.mp3 (for bullet impact on walls)
-- enemy_hurt.mp3 (for enemy taking damage)
+## Phase 7: LAN Multiplayer ✅ DONE
+- [x] Host/join CLI: `--host [port]`, `--join IP[:port]`, `--name NAME`; no flags = unchanged SP
+- [x] UDP star topology, host as world authority, up to 4 players, packed little-endian wire format
+- [x] Host-authoritative enemy AI streamed to clients with interpolation and hit validation
+- [x] PvP friendly fire with kill feed, scoreboard, name tags and per-player colors
+- [x] Death/respawn flow (3 s timer, spawn shield, unoccupied spawn pick)
+- [x] Pickups, barrels, damage and health synced across the star
+- [x] Reconnect handling (host loss → stall detect → handshake reset → auto-rejoin;
+      server-full retries instead of latching)
+
+## Phase 8: Multiplayer & Gameplay Bug Audit ✅ DONE
+- [x] Per-enemy target selection: host enemies fight the local player and every
+      remote peer, not just one globally nearest player
+- [x] Dropped peers no longer linger as ghosts (host relays synthetic BYE that
+      passes clients' stale-seq check)
+- [x] Client kill scoring matches the host exactly (elite +100, headshot 150 + 25×streak)
+- [x] Client-side aim/windup telegraphs restored from snapshot edge flags
+- [x] Pickup consume requests proximity-validated on the host
+- [x] Melee shove mirrored client-side from the damage event
+- [x] Remote walk-anim speed divisor fixed; respawn avoids occupied spawn points
+- [x] LAN hardening: damage clamps + NaN/isfinite rejection, host address validation,
+      bad `--join` warns and falls back to single-player
+- [x] Cleanups: BARREL_RESPAWN_TIME constant, MP-aware HUD hint, dead code removal
+
+## Open Items
+- [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
+      frame, so enemies can't stand on platforms/raised geometry (they clip it).
+      Needs a design pass plus on-platform visual testing.
+- [ ] **Custom keybinds** (leftover from Phase 5) — controls are fixed in code.
+- [ ] _(Accepted risk)_ Relaying P_DAMAGE / P_KILL reuses the sender's seq number;
+      a rare event can be dropped or duplicated. Impact is low, left as-is.
+
+## Missing Assets (optional — silent fallback until added)
+- hit.mp3 (bullet impact on walls)
+- enemy_hurt.mp3 (enemy taking damage)
+- pickup.mp3 (pickup sound)
+
+The game logs `Missing sound: ... (using silent fallback)` and keeps going.
