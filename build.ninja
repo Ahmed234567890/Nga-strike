@@ -1,6 +1,20 @@
-cflags = -Wall -Wextra -g -O2 -march=native -lraylib -lm
+cflags = -Wall -Wextra -g -O2 -std=c99
+ldlibs = -lraylib -lm
 
 rule cc
-    command = cc $cflags $in -o $out
+    command = cc $cflags $in -o $out $ldlibs
+    description = CC $out
 
-build nigga_strike: cc main.c
+rule cc_debug
+    command = cc -Wall -Wextra -g -O0 -std=c99 -DDEBUG $in -o $out $ldlibs
+    description = CC-debug $out
+
+rule clean
+    command = rm -f $out
+    description = CLEAN $out
+
+build nga_strike: cc main.c game.c player.c weapon.c enemy.c pickup.c audio.c world.c ui.c fx.c damage_fx.c shadows.c settings.c net.c
+build nga_strike_debug: cc_debug main.c game.c player.c weapon.c enemy.c pickup.c audio.c world.c ui.c fx.c damage_fx.c shadows.c settings.c net.c
+build clean: clean nga_strike nga_strike_debug
+
+default nga_strike
