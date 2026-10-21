@@ -17,7 +17,7 @@ void Player_Init(Player* p);
 // collision so the player coasts to a stop and lands normally.
 // Reports horizontal speed + walk-bob into speedOut/bobOut; movement uses
 // acceleration, stop friction, limited air control and auto step-up.
-void Player_Update(Player* p, const Box* boxes, int boxCount, float yaw,
+void Player_Update(Player* p, const Box* boxes, int boxCount, float mapLimit, float yaw,
                    float dt, bool ads, bool sprintWant, bool inputEnabled,
                    Vector2* bobOut, bool* movingOut, float* bobTime, float* speedOut);
 void Player_Respawn(Player* p);

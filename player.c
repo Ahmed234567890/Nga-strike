@@ -46,7 +46,7 @@ void Player_DrawShadowBody(const Player* p, float yaw, float pitch) {
     rlPopMatrix();
 }
 
-void Player_Update(Player* p, const Box* boxes, int boxCount, float yaw,
+void Player_Update(Player* p, const Box* boxes, int boxCount, float mapLimit, float yaw,
                    float dt, bool ads, bool sprintWant, bool inputEnabled,
                    Vector2* bobOut, bool* movingOut, float* bobTime, float* speedOut) {
     if (p->spawnProtect > 0.0f) p->spawnProtect -= dt;
@@ -121,8 +121,8 @@ void Player_Update(Player* p, const Box* boxes, int boxCount, float yaw,
     p->position.x = center.x;
     p->position.z = center.z;
 
-    p->position.x = ClampF(p->position.x, -MAP_LIMIT, MAP_LIMIT);
-    p->position.z = ClampF(p->position.z, -MAP_LIMIT, MAP_LIMIT);
+    p->position.x = ClampF(p->position.x, -mapLimit, mapLimit);
+    p->position.z = ClampF(p->position.z, -mapLimit, mapLimit);
 
     // Y (resolve highest ground, ceilings)
     p->position.y += p->velocity.y * dt;

@@ -20,6 +20,8 @@ void Settings_Default(Settings* s) {
     s->fog = true;
     s->aiEnabled = true;
     s->infighting = false;  // preserve the original bots-vs-players behavior
+    s->worldMode = 0;       // CLASSIC
+    s->worldSeed = 1u;
 }
 
 void Settings_Load(Settings* s, const char* path) {
@@ -44,12 +46,16 @@ void Settings_Load(Settings* s, const char* path) {
         else if (!strcmp(key, "fog")) s->fog = (iv != 0);
         else if (!strcmp(key, "ai")) s->aiEnabled = (iv != 0);
         else if (!strcmp(key, "infighting")) s->infighting = (iv != 0);
+        else if (!strcmp(key, "world")) s->worldMode = iv;
+        else if (!strcmp(key, "worldseed")) s->worldSeed = (uint32_t)strtoul(val, NULL, 10);
     }
     fclose(f);
 
     // sanitize everything so a hand-edited cfg can never break startup
     if (s->resIndex < 0 || s->resIndex >= kResCount) s->resIndex = 0;
     if (s->shadowQuality < 0 || s->shadowQuality > 3) s->shadowQuality = 3;
+    if (s->worldMode < 0 || s->worldMode > 2) s->worldMode = 0;
+    if (s->worldSeed == 0) s->worldSeed = 1u;
     if (s->fov < 50) s->fov = 50;
     if (s->fov > 110) s->fov = 110;
     s->sens = ClampF(s->sens, 0.0005f, 0.02f);
@@ -70,5 +76,7 @@ void Settings_Save(const Settings* s, const char* path) {
     fprintf(f, "fog %d\n", s->fog ? 1 : 0);
     fprintf(f, "ai %d\n", s->aiEnabled ? 1 : 0);
     fprintf(f, "infighting %d\n", s->infighting ? 1 : 0);
+    fprintf(f, "world %d\n", s->worldMode);
+    fprintf(f, "worldseed %u\n", s->worldSeed);
     fclose(f);
 }

@@ -22,15 +22,17 @@ typedef struct {
     bool    isLocal;   // hurt feedback (flash/indicator/sound) belongs to this machine
 } EnemyTarget;
 
-void Enemy_InitAll(Enemy* enemies, int count);
+void Enemy_InitAll(Enemy* enemies, int count, const Vector3* spawns, int spawnCount);
 // All-on: despawn everything and trickle the bots back in with staggered
 // respawn timers. All-off: despawn everything and stop (no corpses, no spawns).
 void Enemy_SetActiveAll(Enemy* enemies, int count, bool active);
 void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
-                     const Box* boxes, int boxCount, Audio* audio, float dt,
+                     const Box* boxes, int boxCount, float mapLimit,
+                     const Vector3* spawns, int spawnCount, Audio* audio, float dt,
                      DamageIndicator* dmgInds, int maxDmgInds,
                      float* damageFlashOut, float gameTime);
-void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos, float time, bool fakeBlobs);
+void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos,
+                   Vector3 camPos, Vector3 camFwd, float time, bool fakeBlobs);
 void Enemy_AlertAll(Enemy* enemies, int count, Vector3 gunPos, float radius);
 
 HitZone Enemy_ClassifyHit(const Enemy* e, Vector3 hitPos, bool headRayHit, float headDist, float bodyDist);

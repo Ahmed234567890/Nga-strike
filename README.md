@@ -7,22 +7,72 @@ Play solo against AI enemies, or jump into a LAN match with up to 4 players — 
 ## Features
 
 - **3 weapons** — semi-auto Pistol, automatic AKR, and a hard-hitting scoped Sniper, each with its own damage, spread, recoil, ADS behavior and reloads.
-- **Enemy AI with personality** — patrol / chase / strafe / cover / flee behavior, three combat roles (assault, marksman, rusher), elite variants, melee charges with a visible wind-up, and helmets you can shoot off.
+- **Deterministic city maps** — a classic arena plus seeded **100×100** and **256×256** road-grid cities with blocks, sidewalks, lane markings, eight site archetypes, safe spawns, reachable loot and a playable fallback layout.
+- **Enemy AI with personality** — patrol / chase / strafe / cover / flee behavior, three combat roles (assault, marksman, rusher), elite variants, melee charges with a visible wind-up, and helmets you can shoot off. Each role carries a distinct rifle, SMG or marksman sniper with its own range, cadence, sound and visible magazine reload.
 - **Proper hit zones** — head, torso, leg, and helmet hitboxes with damage numbers, hitmarkers, and headshot streak bonuses.
 - **Explosive barrels** — shoot them to clear a room. They hurt you too.
-- **Pickups** — health and ammo crates that respawn on a timer.
+- **Pickups** — health and ammo crates that respawn on a timer. Random cities scatter them through sites and around the road network, and generation checks that every one is reachable.
 - **Movement** — sprint, jump, aim-down-sights with per-weapon FOV and sensitivity, and a spawn shield after respawning.
-- **Rendering** — dynamic shadow maps (off / low / high / ultra), colored point lights, distance fog, particles, tracers, bullet decals and animated first-person viewmodels.
+- **Rendering** — dynamic shadow maps (off / low / high / ultra), colored point lights, distance fog, particles, tracers, bullet decals and animated first-person viewmodels. Bots outside the view frustum are culled and distant bots use a cheaper model; random-map sun shadows use a lightweight caster pass while Classic keeps the full lit-shadow pass.
 - **HUD** — health, kills, score, timer, reload/ammo display, hitmarkers, headshot banners, and directional damage indicators.
+
+## Maps
+
+Open **`WORLD (NEXT MAP)`** in the pause menu to choose the layout that the
+next **`NEW MAP (REGENERATE)`** will build:
+
+| Mode | Layout | Blocks / sites | Pickups | Perimeter |
+| --- | --- | --- | --- | --- |
+| **CLASSIC** (default) | Original open arena | — | 8 | — |
+| **RANDOM 100** | 100×100 city grid | 3×3 / 9 designed sites | 8 target | Road ring at the edge |
+| **RANDOM 256** | 256×256 city grid | 4×4 / 16 designed sites | 20 target | Road ring at the edge |
+
+Each random city is built from a road grid with raised sidewalk pads, curbs,
+lane dashes, street lamps and furniture, plus eight recurring site types:
+walled compounds, warehouses, container yards, ruins, checkpoints, plazas,
+markets and construction sites. Spawn points, site gates, pickups, barrels and
+decorative props are reserved and checked against the layout so they do not
+spawn inside walls. A flood-fill connectivity check verifies that all spawns,
+loot and barrels can be reached; if a layout cannot be made safe, generation
+retries and ultimately falls back to a bounded open arena with cover.
+
+Generation is deterministic from the map mode and seed. The host sends the
+seed and world epoch with the welcome and snapshots, so every connecting client
+builds the same city. Only the host or a single-player game can run **NEW MAP**;
+it asks for a second press within three seconds, then resets scores, health,
+enemies, barrels and pickups for everyone. Clients follow the host's new world,
+including players who join late or reconnect. `world` and `worldseed` in
+`nga.cfg` record the selected mode and seed; relaunching with those values
+rebuilds the same deterministic city.
+
+## Bot combat
+
+All bots use the same movement and hitbox rules, but their guns are not
+cosmetic:
+
+| Role / gun | Range | Behaviour |
+| --- | --- | --- |
+| Assault / rifle | 25 m | 2–4 round bursts, medium cadence and damage |
+| Rusher / SMG | 17 m | 4–7 round close-range bursts, faster and weaker hits |
+| Marksman / sniper | 52 m | Single heavy shots, long aim time, prefers about 27 m and holds open lanes |
+
+Bots lose accuracy with distance, lead strafing players, get
+more accurate while they keep a target in view, and lose accuracy when moving,
+airborne, flinching or suppressed. Every gun has a distinct sound. Reloading
+is visible: the weapon tilts down, the magazine drops out and is reinserted,
+then the gun comes back up; the same phases are sent to clients. Snipers do not
+use suppression fire. Bots steer and wall-follow around cover, but they do not
+have full pathfinding — see [`TODO.md`](TODO.md).
 
 ## Multiplayer (LAN & internet)
 
 Up to **4 players** over a single UDP port (default **7777**), using a host-authoritative star topology — no dedicated server needed. It works on your LAN out of the box; for the internet the host opens its port automatically via UPnP (see below).
 
-- The **host** runs the world simulation (enemies, barrels, pickups) and relays events; clients send their player state at 30 Hz and render everyone and everything else from host snapshots (20 Hz).
+- The **host** runs the world simulation (enemies, barrels, pickups) and relays events; clients send their player state at 30 Hz and render everyone and everything else from host snapshots (20 Hz). The host also owns the current map mode, seed and world epoch; clients rebuild the same deterministic city and follow live remaps.
 - **Co-op and PvP in one mode** — everyone fights the same AI enemies, and players can damage each other. Watch your fire.
 - **Optional bot infighting** — turn on **BOTS FIGHT EACH OTHER** and bots treat other bots as valid targets and damage them too. They still pick the nearest visible target, so a close player can remain the focus. Host-controlled in multiplayer.
-- **Live settings menu** — `Esc` opens the settings overlay during a match without pausing: the host keeps simulating, clients keep sending state, and snapshots keep flowing. Your character stands idle (and can still be shot) while it is open. On a client, **AI ENEMIES** and **BOTS FIGHT EACH OTHER** are host-controlled and shown as `HOST`.
+- **Live settings menu** — `Esc` opens the settings overlay during a match without pausing: the host keeps simulating, clients keep sending state, and snapshots keep flowing. Your character stands idle (and can still be shot) while it is open. On a client, **AI ENEMIES** and **BOTS FIGHT EACH OTHER** are host-controlled and shown as `HOST`; **NEW MAP** shows `HOST ONLY`.
+- **Host-controlled world changes** — `NEW MAP` resets the round for everyone and generates a fresh seed. Clients apply the new seed/epoch and keep their connection. Late joiners and reconnecting players receive the host's current live world, not the map from their own `nga.cfg`.
 - Kill feed, scoreboard, name tags, and per-player colors keep the match readable.
 - Dead players respawn after 3 seconds with a brief spawn shield, at a spawn point that isn't occupied.
 - Clients reconnect automatically if the host restarts; peers that go silent are dropped after ~10 s.
@@ -115,8 +165,8 @@ Or without ninja:
 ```sh
 cc -Wall -Wextra -g -O2 -std=c99 \
    main.c game.c player.c weapon.c enemy.c pickup.c audio.c world.c ui.c \
-   fx.c damage_fx.c shadows.c settings.c net.c \
-   -o nga_strike -lraylib -lm
+   fx.c damage_fx.c shadows.c settings.c net.c upnp.c \
+   -o nga_strike -lraylib -lm -lminiupnpc
 ```
 
 ### Run
@@ -142,8 +192,15 @@ Settings are stored in `nga.cfg` next to the game and saved whenever you change 
 | Volume | 0–1 |
 | Point Lights | on / off |
 | Distance Fog | on / off |
+| World (Next Map) | CLASSIC / RANDOM 100 / RANDOM 256 — picked up by the next **NEW MAP**; clients show the live host world |
+| New Map (Regenerate) | Generates a new seeded layout after a second confirmation press; single-player/host only and resets the round |
 | AI Enemies | on / off — off despawns every bot and stops spawning; on brings them back gradually |
 | Bots Fight Each Other | on / off — when on, bots also target and damage each other (nearest visible target still wins); host-controlled in multiplayer |
+
+`world` in `nga.cfg` uses `0` for CLASSIC, `1` for RANDOM 100 and `2` for
+RANDOM 256. `worldseed` is the seed used by the current random map; editing
+either file by hand is optional. Use the menu so validation and client sync
+run normally.
 
 ## Project Layout
 
@@ -155,7 +212,7 @@ Settings are stored in `nga.cfg` next to the game and saved whenever you change 
 | `weapon.c` / `weapon.h` | Weapon definitions, shooting, viewmodel animation |
 | `enemy.c` / `enemy.h` | Enemy AI, hitboxes, rendering |
 | `pickup.c` / `pickup.h` | Health / ammo pickups |
-| `world.c` / `world.h` | Arena geometry, collision, rendering |
+| `world.c` / `world.h` | Classic arena, deterministic city generation, collision, connectivity checks and rendering |
 | `shadows.c` / `shadows.h` | Shadow maps and lit shaders |
 | `fx.c`, `damage_fx.c` | Particles, tracers, decals, damage numbers and indicators |
 | `audio.c` / `audio.h` | Sound loading and playback helpers |

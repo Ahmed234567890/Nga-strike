@@ -75,6 +75,8 @@ HitResult Enemy_ApplyDamage(Enemy* e, float dmg, HitZone zone) {
         e->burstLeft = 0;
         e->aimTimer = 0;
         e->windupTimer = 0;
+        e->reloading = false;
+        e->reloadPhase = 0;
         r.killed = true;
     } else {
         r.flinched = true;
@@ -82,20 +84,142 @@ HitResult Enemy_ApplyDamage(Enemy* e, float dmg, HitZone zone) {
     return r;
 }
 
-void Enemy_InitAll(Enemy* enemies, int count) {
-    Vector3 spawns[6] = {
+static int EnemyGunForRole(EnemyRole role) {
+    if (role == ROLE_RUSHER) return ENEMY_GUN_SMG;
+    if (role == ROLE_MARKSMAN) return ENEMY_GUN_SNIPER;
+    return ENEMY_GUN_RIFLE;
+}
+
+static void Enemy_ResetGun(Enemy* e) {
+    e->gun = EnemyGunForRole(e->role);
+    e->reloading = false;
+    e->reloadTimer = 0.0f;
+    e->reloadPhase = 0.0f;
+    e->gunKick = 0.0f;
+    if (e->gun == ENEMY_GUN_SMG) {
+        e->magSize = 24;
+        e->reloadTotal = 1.45f;
+    } else if (e->gun == ENEMY_GUN_SNIPER) {
+        e->magSize = 5;
+        e->reloadTotal = 2.6f;
+    } else {
+        e->magSize = 30;
+        e->reloadTotal = 1.8f;
+    }
+    e->magAmmo = e->magSize;
+}
+
+// Each visible gun also behaves differently: the SMG trades range and punch
+// for a fast close-range burst, the marksman rifle reaches across streets but
+// cycles slowly, and the assault rifle sits in between. Keeping the numbers in
+// one place makes the weapons readable and prevents the old behaviour where
+// every bot fired the same invisible 20 m rifle.
+static float EnemyGunRange(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 17.0f;
+    if (gun == ENEMY_GUN_SNIPER) return 52.0f;
+    return 25.0f;
+}
+
+static float EnemyGunDamage(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 2.7f;
+    if (gun == ENEMY_GUN_SNIPER) return 16.0f;
+    return 4.0f;
+}
+
+static float EnemyGunAimTime(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 0.42f;
+    if (gun == ENEMY_GUN_SNIPER) return 1.05f;
+    return 0.62f;
+}
+
+static float EnemyGunCooldown(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 1.05f;
+    if (gun == ENEMY_GUN_SNIPER) return 2.15f;
+    return 1.35f;
+}
+
+static int EnemyGunBurstMin(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 4;
+    if (gun == ENEMY_GUN_SNIPER) return 1;
+    return 2;
+}
+
+static int EnemyGunBurstSpread(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 3;
+    if (gun == ENEMY_GUN_SNIPER) return 0;
+    return 2;
+}
+
+static float EnemyGunBurstGap(int gun) {
+    if (gun == ENEMY_GUN_SMG) return 0.09f;
+    if (gun == ENEMY_GUN_SNIPER) return 0.30f;
+    return 0.13f;
+}
+
+static void Enemy_PlayGunSound(const Audio* audio, const Enemy* e, float scale) {
+    if (!audio) return;
+    if (e->gun == ENEMY_GUN_SNIPER) {
+        PlaySoundPitched(audio->shotSniper, (0.96f + RandomFloat() * 0.05f) * scale);
+    } else if (e->gun == ENEMY_GUN_SMG) {
+        PlaySoundPitched(audio->shot, (1.12f + RandomFloat() * 0.08f) * scale);
+    } else {
+        PlaySoundPitched(audio->shotAKR, (0.72f + RandomFloat() * 0.09f) * scale);
+    }
+}
+
+static Vector3 Enemy_Steer(Enemy* e, Vector3 wish, const Box* boxes, int boxCount) {
+    float len = Vector3Length(wish);
+    if (len < 0.01f) return wish;
+    Vector3 dir = Vector3Scale(wish, 1.0f / len);
+    Vector3 half = { 0.35f, 0.9f, 0.35f };
+    Vector3 p = { e->position.x, 0.9f, e->position.z };
+    Vector3 probe = Vector3Add(p, Vector3Scale(dir, 1.45f));
+    if (!World_MoveCollides(probe, half, boxes, boxCount)) {
+        return dir;
+    }
+    // Commit to one side for a short time so the bot follows a wall instead of
+    // vibrating between two equally blocked directions.
+    float s = (e->strafeDir >= 0.0f) ? 1.0f : -1.0f;
+    if (e->unstickTimer <= 0.0f) {
+        e->unstickTimer = 0.85f;
+        if (RandomFloat() < 0.35f) s = -s;
+        e->strafeDir = s;
+    }
+    const float angles[6] = {
+        0.62f * s, -0.62f * s, 1.05f * s, -1.05f * s, 1.48f * s, -1.48f * s,
+    };
+    for (int k = 0; k < 6; k++) {
+        float a = angles[k];
+        Vector3 cand = { dir.x * cosf(a) - dir.z * sinf(a), 0,
+                         dir.x * sinf(a) + dir.z * cosf(a) };
+        Vector3 cp = Vector3Add(p, Vector3Scale(cand, 1.45f));
+        if (!World_MoveCollides(cp, half, boxes, boxCount)) {
+            return Vector3Normalize(cand);
+        }
+    }
+    return dir;
+}
+
+void Enemy_InitAll(Enemy* enemies, int count, const Vector3* spawns, int spawnCount) {
+    static const Vector3 fallback[6] = {
         {  20.0f, 0.9f, -20.0f }, { -20.0f, 0.9f,  20.0f },
         {   0.0f, 0.9f, -35.0f }, {  30.0f, 0.9f,  10.0f },
         { -30.0f, 0.9f, -10.0f }, {   0.0f, 0.9f,  38.0f },
     };
+    if (!spawns || spawnCount < 1) {
+        spawns = fallback;
+        spawnCount = 6;
+    }
     EnemyRole roles[6] = { ROLE_ASSAULT, ROLE_RUSHER, ROLE_MARKSMAN, ROLE_ASSAULT, ROLE_RUSHER, ROLE_MARKSMAN };
-    int n = count < 6 ? count : 6;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < count; i++) {
         memset(&enemies[i], 0, sizeof(Enemy));
-        enemies[i].position = spawns[i];
-        enemies[i].spawnPoint = spawns[i];
-        enemies[i].homePos = spawns[i];
-        enemies[i].role = roles[i];
+        if (i >= spawnCount) continue;
+        Vector3 sp = spawns[i];
+        sp.y = 0.9f;
+        enemies[i].position = sp;
+        enemies[i].spawnPoint = sp;
+        enemies[i].homePos = sp;
+        enemies[i].role = roles[i % 6];
         enemies[i].elite = (i == 2 || i == 5);
         float hp = ENEMY_MAX_HEALTH;
         if (enemies[i].role == ROLE_RUSHER) hp *= 0.85f;
@@ -108,7 +232,7 @@ void Enemy_InitAll(Enemy* enemies, int count) {
         enemies[i].hasHelmet = (i % 2 == 0) || enemies[i].elite;
         enemies[i].state = E_PATROL;
         enemies[i].strafeDir = (i & 1) ? 1.0f : -1.0f;
-        enemies[i].facing = atan2f(-spawns[i].x, -spawns[i].z);
+        enemies[i].facing = atan2f(-sp.x, -sp.z);
         float sm = 1.0f;
         if (enemies[i].role == ROLE_RUSHER) sm = 1.35f;
         else if (enemies[i].role == ROLE_MARKSMAN) sm = 0.82f;
@@ -117,12 +241,13 @@ void Enemy_InitAll(Enemy* enemies, int count) {
         enemies[i].dmgMul = enemies[i].elite ? 1.35f : (enemies[i].role == ROLE_MARKSMAN ? 1.2f : 1.0f);
         enemies[i].accMul = enemies[i].role == ROLE_MARKSMAN ? 1.3f : (enemies[i].role == ROLE_RUSHER ? 0.7f : 1.0f);
         if (enemies[i].elite) enemies[i].accMul *= 1.15f;
-        enemies[i].lastPos = spawns[i];
-        enemies[i].lastSeenPos = spawns[i];
+        enemies[i].lastPos = sp;
+        enemies[i].lastSeenPos = sp;
         enemies[i].seed = i * 77;
+        Enemy_ResetGun(&enemies[i]);
     }
-    for (int i = n; i < count; i++) {
-        memset(&enemies[i], 0, sizeof(Enemy));
+    for (int i = 0; i < count; i++) {
+        if (i < spawnCount && i < count) continue;
         enemies[i].alive = false;
         enemies[i].respawnTimer = 2.0f;
     }
@@ -148,6 +273,10 @@ void Enemy_SetActiveAll(Enemy* enemies, int count, bool active) {
         e->visibleTimer = 0;
         e->dodgeTimer = 0;
         e->suppressTimer = 0;
+        e->reloading = false;
+        e->reloadTimer = 0;
+        e->reloadPhase = 0;
+        e->gunKick = 0;
         // re-enabling: respawn timers count down one after another so the
         // bots come back gradually instead of all popping in on one frame
         e->respawnTimer = active ? (0.6f + 0.55f * (float)i) : 0.0f;
@@ -189,14 +318,15 @@ static float TurnToward(float cur, float target, float maxStep) {
     return cur + d;
 }
 
-static bool FindCover(Enemy* e, Vector3 playerEye, const Box* boxes, int boxCount, Vector3* out) {
+static bool FindCover(Enemy* e, Vector3 playerEye, const Box* boxes, int boxCount,
+                      float mapLimit, Vector3* out) {
     Vector3 best = { 0 };
     float bestScore = -1e9f;
     for (int k = 0; k < 10; k++) {
         float a = ((float)k / 10.0f) * 2 * PI + (float)e->seed * 0.13f;
         float r = 4.0f + (float)(k % 3) * 1.6f;
         Vector3 cand = { e->position.x + cosf(a) * r, 0.9f, e->position.z + sinf(a) * r };
-        if (fabsf(cand.x) > MAP_LIMIT - 1 || fabsf(cand.z) > MAP_LIMIT - 1) continue;
+        if (fabsf(cand.x) > mapLimit - 1 || fabsf(cand.z) > mapLimit - 1) continue;
         Vector3 half = { 0.35f, 0.9f, 0.35f };
         if (World_MoveCollides(cand, half, boxes, boxCount)) continue;
         Vector3 eye = { cand.x, cand.y + 0.55f, cand.z };
@@ -208,8 +338,18 @@ static bool FindCover(Enemy* e, Vector3 playerEye, const Box* boxes, int boxCoun
     return false;
 }
 
+static void Enemy_BeginReload(Enemy* e) {
+    if (e->reloading || e->magAmmo >= e->magSize) return;
+    e->reloading = true;
+    e->reloadTimer = e->reloadTotal;
+    e->reloadPhase = 0.0f;
+    e->burstLeft = 0;
+    e->aimTimer = 0.0f;
+}
+
 void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
-                     const Box* boxes, int boxCount, Audio* audio, float dt,
+                     const Box* boxes, int boxCount, float mapLimit,
+                     const Vector3* spawns, int spawnCount, Audio* audio, float dt,
                      DamageIndicator* dmgInds, int maxDmgInds,
                      float* damageFlashOut, float gameTime) {
     if (targetCount < 1) return;
@@ -229,10 +369,25 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         if (e->alertTimer > 0) e->alertTimer -= dt;
         if (e->burstTimer > 0) e->burstTimer -= dt;
         if (e->dodgeTimer > 0) e->dodgeTimer -= dt;
+        if (e->unstickTimer > 0) e->unstickTimer -= dt;
         if (e->suppressTimer > 0) e->suppressTimer -= dt;
         if (e->windupTimer > 0) e->windupTimer -= dt;
+        if (e->gunKick > 0) e->gunKick -= dt * 2.6f;
+        if (e->gunKick < 0) e->gunKick = 0;
+        if (e->reloading) {
+            e->reloadTimer -= dt;
+            e->reloadPhase = ClampF(1.0f - e->reloadTimer / fmaxf(e->reloadTotal, 0.01f), 0.0f, 1.0f);
+            if (e->reloadTimer <= 0) {
+                e->reloading = false;
+                e->reloadPhase = 0.0f;
+                e->magAmmo = e->magSize;
+                e->shootTimer = fmaxf(e->shootTimer, 0.18f);
+                if (audio) PlaySoundPitched(audio->reload, e->gun == ENEMY_GUN_SNIPER ? 0.82f : 1.05f);
+            }
+            e->aimTimer = 0;
+        }
         // rifle raise/lower blend: 1 = shouldered while aiming or firing
-        float aimTarget = (!e->alive) ? 0.0f
+        float aimTarget = (!e->alive || e->reloading) ? 0.0f
                         : ((e->aimTimer > 0.2f || e->burstLeft > 0) ? 1.0f : 0.0f);
         e->aimBlend += (aimTarget - e->aimBlend) * ClampF(dt * 7.0f, 0.0f, 1.0f);
 
@@ -245,8 +400,9 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         float tbestScore = 1e30f;
         {
             Vector3 ee = EnemyEyePos(e);
-            float seer = (e->alertTimer > 0) ? 44.0f : 30.0f;
-            if (e->role == ROLE_MARKSMAN) seer += 8.0f;
+            float seer = EnemyGunRange(e->gun) + 6.0f;
+            if (e->alertTimer > 0) seer += 10.0f;
+            if (e->role == ROLE_MARKSMAN) seer += 4.0f;
             for (int k = 0; k < targetCount; k++) {
                 const EnemyTarget* t = &targets[k];
                 if (t->enemyId == i) continue; // never target self
@@ -268,17 +424,20 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
             else {
                 e->respawnTimer -= dt;
                 if (e->respawnTimer <= 0) {
-                    Vector3 cand[6] = {
+                    static const Vector3 fallback[6] = {
                         {  20, 0.9f, -20 }, { -20, 0.9f, 20 }, { 0, 0.9f, -35 },
                         {  30, 0.9f, 10 }, { -30, 0.9f, -10 }, { 0, 0.9f, 38 },
                     };
-                    Vector3 best = cand[GetRandomValue(0, 5)];
+                    const Vector3* cand = (spawns && spawnCount > 0) ? spawns : fallback;
+                    int cn = (spawns && spawnCount > 0) ? spawnCount : 6;
+                    Vector3 best = cand[GetRandomValue(0, cn - 1)];
                     float bd = -1;
-                    for (int k = 0; k < 6; k++) {
+                    for (int k = 0; k < cn; k++) {
                         float d = Vector3Distance(cand[k], player->position);
                         if (d > bd) { bd = d; best = cand[k]; }
                     }
                     if (bd < 12.0f) { e->respawnTimer = 1.0f; continue; }
+                    best.y = 0.9f;
                     e->alive = true;
                     e->maxHealth = ENEMY_MAX_HEALTH * ramp * (e->elite ? 1.6f : 1.0f);
                     e->health = e->maxHealth;
@@ -294,6 +453,7 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
                     e->state = E_PATROL;
                     e->lastSeenPos = e->position;
                     e->suppressTimer = RandRange(0.5f, 1.5f);
+                    Enemy_ResetGun(e);
                 }
             }
             continue;
@@ -311,8 +471,9 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         while (df > PI) df -= 2 * PI;
         while (df < -PI) df += 2 * PI;
         bool inCone = fabsf(df) < cone;
-        float seeRange = (e->alertTimer > 0) ? 44.0f : 30.0f;
-        if (e->role == ROLE_MARKSMAN) seeRange += 8.0f;
+        float gunRange = EnemyGunRange(e->gun);
+        float seeRange = gunRange + (e->alertTimer > 0 ? 12.0f : 6.0f);
+        if (e->role == ROLE_MARKSMAN) seeRange += 4.0f;
         bool los = !dead && dist < seeRange && World_LOS(EnemyEyePos(e), playerEye, boxes, boxCount);
         bool canSee = los && inCone;
         if (los && !inCone && dist < 6.0f) canSee = true; // peripheral at close range
@@ -333,7 +494,7 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         }
 
         bool reactive = e->visibleTimer > (e->role == ROLE_MARKSMAN ? 0.45f : 0.22f);
-        bool inShootRange = !dead && reactive && dist <= ENEMY_SHOOT_RANGE && los;
+        bool inShootRange = !dead && reactive && dist <= gunRange && los;
 
         // separation
         Vector3 sep = { 0 };
@@ -372,8 +533,8 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
                         PlaySoundPitched(audio->playerHurt, 0.75f + RandomFloat() * 0.2f);
                     }
                     Vector3 away = (dist > 0.01f) ? Vector3Scale(toPlayer, -1.4f / dist) : (Vector3){ 0 };
-                    player->position.x = ClampF(player->position.x + away.x * 0.18f, -MAP_LIMIT, MAP_LIMIT);
-                    player->position.z = ClampF(player->position.z + away.z * 0.18f, -MAP_LIMIT, MAP_LIMIT);
+                    player->position.x = ClampF(player->position.x + away.x * 0.18f, -mapLimit, mapLimit);
+                    player->position.z = ClampF(player->position.z + away.z * 0.18f, -mapLimit, mapLimit);
                 }
             }
         }
@@ -382,7 +543,7 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         bool weak = e->health < e->maxHealth * 0.32f;
         if (!dead && weak && los && e->role != ROLE_RUSHER) {
             if (e->state != E_COVER || !e->hasCoverPos) {
-                if (FindCover(e, playerEye, boxes, boxCount, &e->coverPos)) {
+                if (FindCover(e, playerEye, boxes, boxCount, mapLimit, &e->coverPos)) {
                     e->hasCoverPos = true;
                     e->state = E_COVER;
                     e->aimTimer = 0;
@@ -397,7 +558,9 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         bool wantsMove = false;
         Vector3 wish = { 0 };
         float prefer = 11.0f;
-        if (e->role == ROLE_MARKSMAN) prefer = 16.5f;
+        // The marksman rifle can reach across a city block, so its owner keeps
+        // a long lane instead of walking into SMG range like the old AI did.
+        if (e->role == ROLE_MARKSMAN) prefer = 27.0f;
         else if (e->role == ROLE_RUSHER) prefer = 1.8f;
         else prefer = 10.5f + (float)(e->seed % 4);
 
@@ -492,6 +655,7 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
             if (e->state == E_STRAFE) spd *= 0.8f;
             if (e->state == E_COVER) spd *= 1.05f;
             if (e->flinchTimer > 0) spd *= 0.45f;
+            wish = Enemy_Steer(e, wish, boxes, boxCount);
             Vector3 delta = Vector3Scale(wish, spd * dt);
             delta = Vector3Add(delta, Vector3Scale(sep, dt * 2.2f));
             Vector3 before = e->position;
@@ -519,15 +683,19 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         // Alerted, no clean shot: rake the last known position every few
         // seconds. It only hurts if the player is still near that spot with
         // real line of sight when the burst lands (punishes lazy re-peeks).
-        if (!dead && !inShootRange && e->alertTimer > 0 && dist < 36.0f &&
-            e->windupTimer <= 0 && e->suppressTimer <= 0) {
+        if (!dead && e->gun != ENEMY_GUN_SNIPER && !inShootRange && e->alertTimer > 0 &&
+            dist < gunRange + 6.0f && e->windupTimer <= 0 && e->suppressTimer <= 0 &&
+            !e->reloading && e->magAmmo >= 3) {
             e->suppressTimer = RandRange(2.2f, 3.8f) * (e->role == ROLE_RUSHER ? 0.75f : 1.0f);
+            e->magAmmo -= 3;
+            if (e->magAmmo <= 0) Enemy_BeginReload(e);
+            e->gunKick = 0.055f;
             e->muzzleFlash = 0.06f;
-            PlaySoundPitched(audio->shotAKR, 0.72f + RandomFloat() * 0.12f);
+            Enemy_PlayGunSound(audio, e, 0.72f);
             bool stillThere = Vector3Distance(player->position, e->lastSeenPos) < 2.4f;
             bool realLos = !dead && World_LOS(EnemyEyePos(e), playerEye, boxes, boxCount);
-            if (stillThere && realLos && dist < ENEMY_SHOOT_RANGE + 5.0f) {
-                float dd = ENEMY_SHOOT_DMG * 0.6f * ramp * e->dmgMul;
+            if (stillThere && realLos && dist < gunRange + 5.0f) {
+                float dd = EnemyGunDamage(e->gun) * 0.6f * ramp * e->dmgMul;
                 if (Player_TakeDamage(player, dd)) {
                     if (tgt->isLocal) {
                         if (damageFlashOut) *damageFlashOut = 0.4f;
@@ -539,60 +707,71 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         }
 
         // --- RANGED ATTACK (role bursts) ---
-        float aimNeed = (e->role == ROLE_MARKSMAN) ? ENEMY_AIM_TIME + 0.25f : ENEMY_AIM_TIME;
+        float aimNeed = EnemyGunAimTime(e->gun);
+        if (e->role == ROLE_MARKSMAN) aimNeed += 0.12f;
         if (e->elite) aimNeed *= 0.8f;
-        if (inShootRange && e->windupTimer <= 0) {
+        if (!e->reloading && inShootRange && e->windupTimer <= 0) {
             if (e->burstLeft > 0) {
                 if (e->burstTimer <= 0) {
-                    e->burstTimer = (e->role == ROLE_MARKSMAN) ? 0.22f : 0.13f;
-                    e->burstLeft--;
-                    e->muzzleFlash = 0.06f;
-                    float acc = 1.0f - (dist / ENEMY_SHOOT_RANGE) * 0.85f;
-                    acc *= 0.8f * e->accMul;
-                    if (aliveN >= 3) acc *= 1.08f; // pack focus
-                    // AI v2 tracking: lead the player's lateral motion - fast
-                    // strafing is hard to hit, standing still is punished, and
-                    // the longer they have eyes on you the more dialed-in they
-                    // become (visibleTimer bonus).
-                    Vector3 pv = player->velocity;
-                    pv.y = 0;
-                    float pSpeed = Vector3Length(pv);
-                    float latSpeed = 0.0f;
-                    if (dist > 0.01f) {
-                        Vector3 dirP = { toPlayer.x / dist, 0, toPlayer.z / dist };
-                        Vector3 latV = Vector3Subtract(pv, Vector3Scale(dirP, Vector3DotProduct(pv, dirP)));
-                        latSpeed = Vector3Length(latV);
-                    }
-                    acc *= 1.0f - ClampF(latSpeed / 16.0f, 0.0f, 0.30f);
-                    acc *= 1.0f + ClampF(e->visibleTimer * 0.04f, 0.0f, 0.18f);
-                    if (pSpeed < 0.5f) acc *= 1.15f; // camping is punished
-                    if (tgt->moving) acc *= 0.85f;
-                    if (tgt->airborne) acc *= 0.62f;
-                    if (Vector3Length(sep) > 0.5f) acc *= 0.85f;
-                    if (e->flinchTimer > 0) acc *= 0.6f;
-                    acc = ClampF(acc, 0.05f, 0.92f);
-                    if (RandomFloat() < acc) {
-                        float dd = ENEMY_SHOOT_DMG * ramp * e->dmgMul;
-                        if (Player_TakeDamage(player, dd)) {
-                            if (tgt->isLocal) {
-                                if (damageFlashOut) *damageFlashOut = 0.35f;
-                                DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
-                                PlaySoundPitched(audio->playerHurt, 0.85f + RandomFloat() * 0.15f);
+                    if (e->magAmmo <= 0) {
+                        Enemy_BeginReload(e);
+                    } else {
+                        e->magAmmo--;
+                        e->gunKick = 0.06f;
+                        e->burstTimer = EnemyGunBurstGap(e->gun);
+                        e->burstLeft--;
+                        float acc = 1.0f - (dist / gunRange) * (e->gun == ENEMY_GUN_SNIPER ? 0.55f : 0.82f);
+                        acc *= 0.8f * e->accMul;
+                        if (aliveN >= 3) acc *= 1.08f; // pack focus
+                        // AI v2 tracking: lead the player's lateral motion - fast
+                        // strafing is hard to hit, standing still is punished, and
+                        // the longer they have eyes on you the more dialed-in they
+                        // become (visibleTimer bonus).
+                        Vector3 pv = player->velocity;
+                        pv.y = 0;
+                        float pSpeed = Vector3Length(pv);
+                        float latSpeed = 0.0f;
+                        if (dist > 0.01f) {
+                            Vector3 dirP = { toPlayer.x / dist, 0, toPlayer.z / dist };
+                            Vector3 latV = Vector3Subtract(pv, Vector3Scale(dirP, Vector3DotProduct(pv, dirP)));
+                            latSpeed = Vector3Length(latV);
+                        }
+                        acc *= 1.0f - ClampF(latSpeed / 16.0f, 0.0f, 0.30f);
+                        acc *= 1.0f + ClampF(e->visibleTimer * 0.04f, 0.0f, 0.18f);
+                        if (pSpeed < 0.5f) acc *= 1.15f; // camping is punished
+                        if (tgt->moving) acc *= 0.85f;
+                        if (tgt->airborne) acc *= 0.62f;
+                        if (Vector3Length(sep) > 0.5f) acc *= 0.85f;
+                        if (e->flinchTimer > 0) acc *= 0.6f;
+                        if (e->gun == ENEMY_GUN_SNIPER) acc *= 1.08f;
+                        acc = ClampF(acc, 0.05f, 0.92f);
+                        if (RandomFloat() < acc) {
+                            float dd = EnemyGunDamage(e->gun) * ramp * e->dmgMul;
+                            if (Player_TakeDamage(player, dd)) {
+                                if (tgt->isLocal) {
+                                    if (damageFlashOut) *damageFlashOut = 0.35f;
+                                    DamageFX_SpawnIndicator(dmgInds, maxDmgInds, e->position);
+                                    PlaySoundPitched(audio->playerHurt, 0.85f + RandomFloat() * 0.15f);
+                                }
                             }
                         }
+                        Enemy_PlayGunSound(audio, e, 1.0f);
+                        if (e->magAmmo <= 0) Enemy_BeginReload(e);
                     }
-                    PlaySoundPitched(audio->shotAKR, 0.7f + RandomFloat() * 0.1f);
                 }
             } else if (e->aimTimer < aimNeed) {
                 e->aimTimer += dt;
             } else if (e->shootTimer <= 0) {
-                if (e->role == ROLE_MARKSMAN) e->burstLeft = 1 + GetRandomValue(0, 1);
-                else if (e->role == ROLE_RUSHER) e->burstLeft = 3 + GetRandomValue(0, 3);
-                else e->burstLeft = 2 + GetRandomValue(0, 2);
-                e->burstTimer = 0;
-                e->shootTimer = ENEMY_SHOOT_CD * RandRange(0.9f, 1.3f) / ramp;
-                if (e->role == ROLE_RUSHER) e->shootTimer *= 0.8f;
-                e->aimTimer = 0.15f;
+                if (e->magAmmo <= 0) {
+                    Enemy_BeginReload(e);
+                } else {
+                    e->burstLeft = EnemyGunBurstMin(e->gun) +
+                                   GetRandomValue(0, EnemyGunBurstSpread(e->gun));
+                    e->burstTimer = 0;
+                    e->shootTimer = EnemyGunCooldown(e->gun) * RandRange(0.9f, 1.3f) / ramp;
+                    if (e->role == ROLE_RUSHER) e->shootTimer *= 0.88f;
+                    e->aimTimer = 0.15f;
+                }
             }
         } else {
             if (e->burstLeft == 0) e->aimTimer = fmaxf(0, e->aimTimer - dt * 3.0f);
@@ -600,10 +779,116 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
     }
 }
 
-void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos, float time, bool fakeBlobs) {
+// Map a point in the gun's local space into the upper-body space using the
+// same pivot/pitch/roll/dip transform the weapon matrix uses. Keeps hands
+// welded to the weapon during aiming and reloads instead of floating.
+static Vector3 EnemyGunToBody(Vector3 p, float pivotY, float pivotZ,
+                              float pitchDeg, float tiltDeg, float lift, float dip) {
+    p.y -= pivotY;
+    p.z -= pivotZ;
+    float rz = tiltDeg * DEG2RAD;
+    float x = p.x * cosf(rz) - p.y * sinf(rz);
+    float y = p.x * sinf(rz) + p.y * cosf(rz);
+    p.x = x;
+    p.y = y;
+    float rx = pitchDeg * DEG2RAD;
+    y = p.y * cosf(rx) - p.z * sinf(rx);
+    float z = p.y * sinf(rx) + p.z * cosf(rx);
+    p.y = y + pivotY + lift - dip;
+    p.z = z + pivotZ;
+    return p;
+}
+
+// Distant bots are tiny on screen, so drawing every bolt and finger is pure
+// waste. This reads clearly at city sightlines while keeping the full model for
+// close fights (and for the reload animation that players actually inspect).
+static void Enemy_DrawSimple(const Enemy* e, int index, bool fakeBlobs, float time) {
+    bool hurt = e->hurtTimer > 0.0f;
+    bool aiming = e->aimTimer > 0.3f || e->burstLeft > 0;
+    Color skinCol = hurt ? WHITE : (Color){ 214, 168, 128, 255 };
+    Color bodyCol = hurt ? WHITE : e->elite ? (Color){ 90, 30, 32, 255 } :
+                     (e->role == ROLE_RUSHER ? (Color){ 130, 75, 40, 255 } :
+                     (e->role == ROLE_MARKSMAN ? (Color){ 45, 70, 60, 255 } :
+                      (index & 1) ? (Color){ 120, 60, 55, 255 } : (Color){ 52, 82, 138, 255 }));
+    Color pantCol = hurt ? WHITE : (Color){ 38, 42, 52, 255 };
+    Color darkCol = hurt ? WHITE : (Color){ 18, 20, 26, 255 };
+    Color gunCol = hurt ? WHITE : (Color){ 34, 36, 42, 255 };
+    float reloadT = e->reloading ? ClampF(e->reloadPhase, 0.0f, 1.0f) : 0.0f;
+    float dip = sinf(reloadT * PI) * 0.12f;
+    bool sniper = e->gun == ENEMY_GUN_SNIPER;
+    bool smg = e->gun == ENEMY_GUN_SMG;
+    if (fakeBlobs) {
+        rlDrawRenderBatchActive();
+        rlDisableDepthMask();
+        DrawCylinder((Vector3){ e->position.x, 0.14f, e->position.z }, 0.55f, 0.55f, 0.02f, 12,
+                     (Color){ 0, 0, 0, 70 });
+        rlDrawRenderBatchActive();
+        rlEnableDepthMask();
+    }
+    rlPushMatrix();
+    rlTranslatef(e->position.x, e->position.y, e->position.z);
+    rlRotatef(e->facing * RAD2DEG, 0, 1, 0);
+    DrawCubeV((Vector3){ -0.14f, -0.58f, 0 }, (Vector3){ 0.20f, 0.60f, 0.22f }, pantCol);
+    DrawCubeV((Vector3){  0.14f, -0.58f, 0 }, (Vector3){ 0.20f, 0.60f, 0.22f }, pantCol);
+    DrawCubeV((Vector3){ 0, 0.18f, 0 }, (Vector3){ 0.54f, 0.68f, 0.34f }, bodyCol);
+    DrawCubeV((Vector3){ 0, 0.68f, 0 }, (Vector3){ 0.30f, 0.30f, 0.28f }, skinCol);
+    DrawCubeV((Vector3){ 0, 0.86f, 0 }, (Vector3){ 0.36f, 0.12f, 0.34f },
+              e->hasHelmet ? (e->elite ? (Color){ 90, 20, 20, 255 } : (Color){ 58, 60, 58, 255 })
+                           : (Color){ 45, 32, 24, 255 });
+    if (aiming) {
+        DrawCubeV((Vector3){ -0.07f, 0.71f, 0.145f }, (Vector3){ 0.05f, 0.05f, 0.02f },
+                  e->elite ? (Color){ 255, 40, 40, 255 } : (Color){ 255, 90, 50, 255 });
+        DrawCubeV((Vector3){ 0.07f, 0.71f, 0.145f }, (Vector3){ 0.05f, 0.05f, 0.02f },
+                  e->elite ? (Color){ 255, 40, 40, 255 } : (Color){ 255, 90, 50, 255 });
+    }
+    float glen = sniper ? 1.15f : (smg ? 0.70f : 0.94f);
+    rlPushMatrix();
+    rlTranslatef(0.09f, 0.20f - dip, 0);
+    DrawCubeV((Vector3){ 0, 0, 0.32f + glen * 0.5f }, (Vector3){ 0.08f, 0.10f, glen }, gunCol);
+    if (sniper) {
+        DrawCylinderEx((Vector3){ 0, 0.06f, 0.58f }, (Vector3){ 0, 0.06f, 1.02f },
+                       0.025f, 0.025f, 6, (Color){ 90, 95, 105, 255 });
+    }
+    if (e->muzzleFlash > 0.0f) {
+        float s = 0.07f * (0.6f + 0.4f * (e->muzzleFlash / 0.06f));
+        DrawSphereEx((Vector3){ 0, 0, 0.32f + glen + 0.03f }, s * 1.4f, 6, 4,
+                     (Color){ 255, 210, 90, 255 });
+    }
+    if (reloadT > 0.15f && reloadT < 0.85f) {
+        DrawCubeV((Vector3){ 0, -0.16f + dip, 0.48f }, (Vector3){ 0.07f, 0.15f, 0.10f }, darkCol);
+    }
+    rlPopMatrix();
+    rlPopMatrix();
     (void)time;
+}
+
+void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos,
+                   Vector3 camPos, Vector3 camFwd, float time, bool fakeBlobs) {
+    Vector3 fwd = { camFwd.x, 0.0f, camFwd.z };
+    float flen = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
+    if (flen < 0.01f) { fwd = (Vector3){ 0, 0, 1 }; flen = 1.0f; }
+    fwd = Vector3Scale(fwd, 1.0f / flen);
     for (int i = 0; i < count; i++) {
         const Enemy* e = &enemies[i];
+        float cdx = e->position.x - camPos.x;
+        float cdz = e->position.z - camPos.z;
+        float distXZ = sqrtf(cdx * cdx + cdz * cdz);
+        // Behind-camera and very distant bots cost draw calls while
+        // contributing nothing. Distant visible bots use the cheap model.
+        if (distXZ > 155.0f) continue;
+        if (distXZ > 5.0f && (cdx * fwd.x + cdz * fwd.z) / distXZ < -0.16f) continue;
+        if (e->alive && distXZ > 26.0f) {
+            Enemy_DrawSimple(e, i, fakeBlobs, time);
+            if (distXZ < 42.0f) {
+                Vector3 bar = { e->position.x, e->position.y + 1.12f, e->position.z };
+                DrawCube(bar, 0.9f, 0.08f, 0.08f, BLACK);
+                float f = ClampF(e->health / e->maxHealth, 0, 1);
+                Color hc = e->elite ? GOLD : (f > 0.5f ? GREEN : (f > 0.25f ? ORANGE : RED));
+                if (f > 0) DrawCube((Vector3){ bar.x - 0.45f + 0.45f * f, bar.y, bar.z },
+                                    0.9f * f, 0.08f, 0.08f, hc);
+            }
+            continue;
+        }
         // corpse
         if (!e->alive) {
             if (e->deathTimer <= 0) continue;
@@ -704,7 +989,7 @@ void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos, float tim
             DrawCubeV((Vector3){ 0, 0.74f, 0.15f }, (Vector3){ 0.22f, 0.03f, 0.01f }, (Color){ 255, 40, 40, 200 });
         }
 
-        // ---- rifle held two-handed, pitching up/down to track the player ----
+        // ---- weapon held two-handed, with variant geometry and reload ----
         const float pvY = 0.30f, pvZ = 0.18f;
         float aimPitch = 0.0f;
         if (!winding && e->aimBlend > 0.001f) {
@@ -715,51 +1000,133 @@ void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos, float tim
             aimPitch = ClampF(-atan2f(dy, fmaxf(horiz, 0.01f)) * RAD2DEG, -40.0f, 40.0f) * e->aimBlend;
         }
         float lift = 0.10f * e->aimBlend;
+        bool isSmg = (e->gun == ENEMY_GUN_SMG);
+        bool isSniper = (e->gun == ENEMY_GUN_SNIPER);
+        float reloadT = e->reloading ? ClampF(e->reloadPhase, 0.0f, 1.0f) : 0.0f;
+        float reloadArc = sinf(reloadT * PI);
+        float gunDip = (isSniper ? 0.16f : 0.12f) * reloadArc;
+        float gunTilt = (isSmg ? 28.0f : 20.0f) * reloadArc;
+        float pitchPose = aimPitch - 9.0f * reloadArc - e->gunKick * 55.0f;
+
+        // Magazine choreography: old mag drops out, short empty beat, fresh
+        // mag rises into the well. The charging handle cycles right after.
+        bool magVisible = true;
+        float magDrop = 0.0f;
+        if (reloadT > 0.0f) {
+            if (reloadT < 0.32f) magDrop = -(reloadT / 0.32f) * 0.38f;
+            else if (reloadT < 0.52f) magVisible = false;
+            else if (reloadT < 0.90f) magDrop = -0.38f * (1.0f - (reloadT - 0.52f) / 0.38f);
+        }
+        float bolt = 0.0f;
+        if (reloadT > 0.55f && reloadT < 0.70f)
+            bolt = -0.07f * ((reloadT - 0.55f) / 0.15f);
+        else if (reloadT >= 0.70f && reloadT < 0.86f)
+            bolt = -0.07f * (1.0f - (reloadT - 0.70f) / 0.16f);
+
+        Vector3 rightHand = isSmg ? (Vector3){ 0.08f, -0.10f, 0.30f }
+                          : isSniper ? (Vector3){ 0.08f, -0.08f, 0.30f }
+                          : (Vector3){ 0.09f, -0.08f, 0.40f };
+        Vector3 leftHand = isSmg ? (Vector3){ -0.08f, -0.05f, 0.60f }
+                         : isSniper ? (Vector3){ -0.08f, -0.04f, 0.88f }
+                         : (Vector3){ -0.09f, -0.05f, 0.80f };
+        Vector3 magHand = isSmg ? (Vector3){ -0.03f, -0.26f, 0.38f }
+                        : isSniper ? (Vector3){ -0.03f, -0.17f, 0.52f }
+                        : (Vector3){ -0.03f, -0.20f, 0.45f };
+        if (reloadArc > 0.01f) {
+            rightHand.y -= 0.04f * reloadArc;
+            leftHand = Vector3Lerp(leftHand, magHand, reloadArc);
+        }
 
         rlPushMatrix();
-        rlTranslatef(0, lift, 0);
+        rlTranslatef(0, lift - gunDip, 0);
         rlTranslatef(0, pvY, pvZ);
-        rlRotatef(aimPitch, 1, 0, 0);
+        rlRotatef(pitchPose, 1, 0, 0);
+        rlRotatef(gunTilt, 0, 0, 1);
         rlTranslatef(0, -pvY, -pvZ);
-        // stock / receiver / rail / sights
-        DrawCubeV((Vector3){ 0.02f, -0.03f, 0.16f }, (Vector3){ 0.09f, 0.13f, 0.24f }, gunCol);
-        DrawCubeV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.11f, 0.13f, 0.55f }, gunCol);
-        DrawCubeWiresV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.11f, 0.13f, 0.55f }, darkCol);
-        DrawCubeV((Vector3){ 0, 0.095f, 0.52f }, (Vector3){ 0.05f, 0.015f, 0.50f }, gunSteel);
-        DrawCubeV((Vector3){ 0, 0.135f, 0.60f }, (Vector3){ 0.05f, 0.05f, 0.03f }, gunSteel);
-        DrawCubeV((Vector3){ 0, 0.135f, 1.04f }, (Vector3){ 0.02f, 0.06f, 0.03f }, gunSteel);
-        if (e->elite) DrawCubeV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.115f, 0.03f, 0.34f }, (Color){ 150, 30, 30, 255 });
-        // barrel / muzzle
-        DrawCylinderEx((Vector3){ 0, 0.035f, 0.80f }, (Vector3){ 0, 0.035f, 1.18f }, 0.021f, 0.021f, 8, gunSteel);
-        DrawCubeV((Vector3){ 0, 0.035f, 1.20f }, (Vector3){ 0.05f, 0.05f, 0.05f }, darkCol);
-        // handguard / mag / grip
-        DrawCubeV((Vector3){ 0, -0.04f, 0.80f }, (Vector3){ 0.09f, 0.08f, 0.34f }, gunCol);
-        DrawCubeV((Vector3){ 0, -0.16f, 0.46f }, (Vector3){ 0.08f, 0.18f, 0.12f }, darkCol);
-        DrawCubeV((Vector3){ 0, -0.27f, 0.49f }, (Vector3){ 0.08f, 0.10f, 0.12f }, darkCol);
-        DrawCubeV((Vector3){ 0, -0.11f, 0.34f }, (Vector3){ 0.07f, 0.16f, 0.09f }, gunCol);
-        // hands gripping the rifle (follow the pitch)
-        if (!winding) DrawCubeV((Vector3){ 0.09f, -0.08f, 0.40f }, (Vector3){ 0.13f, 0.13f, 0.13f }, skinCol);
-        DrawCubeV((Vector3){ -0.09f, -0.05f, 0.80f }, (Vector3){ 0.13f, 0.13f, 0.13f }, skinCol);
-        if (aiming && e->burstLeft == 0 && !winding) {
-            DrawCubeV((Vector3){ 0, 0.035f, 0.95f }, (Vector3){ 0.008f, 0.008f, 0.5f }, (Color){ 255, 60, 40, 120 });
+
+        if (isSniper) {
+            DrawCubeV((Vector3){ 0.02f, -0.02f, 0.06f }, (Vector3){ 0.10f, 0.15f, 0.46f }, gunCol);
+            DrawCubeV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.10f, 0.12f, 0.58f }, gunCol);
+            DrawCubeV((Vector3){ 0.02f, 0.0f, 0.14f }, (Vector3){ 0.13f, 0.10f, 0.18f }, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.10f, 0.52f }, (Vector3){ 0.04f, 0.02f, 0.50f }, gunSteel);
+            DrawCylinderEx((Vector3){ 0, 0.16f, 0.42f }, (Vector3){ 0, 0.16f, 0.86f }, 0.055f, 0.055f, 8, darkCol);
+            DrawCubeV((Vector3){ 0, 0.16f, 0.90f }, (Vector3){ 0.08f, 0.08f, 0.02f }, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.16f, 0.40f }, (Vector3){ 0.08f, 0.08f, 0.02f }, gunSteel);
+            DrawCylinderEx((Vector3){ 0, 0.02f, 0.94f }, (Vector3){ 0, 0.02f, 1.48f }, 0.018f, 0.018f, 8, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.02f, 1.50f }, (Vector3){ 0.055f, 0.055f, 0.08f }, darkCol);
+            DrawCubeV((Vector3){ 0, 0.09f, 0.05f }, (Vector3){ 0.09f, 0.04f, 0.28f }, gunCol);
+            DrawCylinderEx((Vector3){ -0.05f, -0.04f, 0.86f }, (Vector3){ -0.10f, -0.20f, 0.90f }, 0.012f, 0.012f, 6, gunSteel);
+            DrawCylinderEx((Vector3){ 0.05f, -0.04f, 0.86f }, (Vector3){ 0.10f, -0.20f, 0.90f }, 0.012f, 0.012f, 6, gunSteel);
+            if (magVisible) {
+                rlPushMatrix();
+                rlTranslatef(0, magDrop, 0);
+                DrawCubeV((Vector3){ 0, -0.15f, 0.54f }, (Vector3){ 0.07f, 0.15f, 0.13f }, darkCol);
+                rlPopMatrix();
+            }
+            DrawCubeV((Vector3){ 0.075f, 0.075f, 0.72f + bolt }, (Vector3){ 0.035f, 0.035f, 0.10f }, gunSteel);
+        } else if (isSmg) {
+            DrawCubeV((Vector3){ 0.02f, -0.03f, 0.10f }, (Vector3){ 0.10f, 0.14f, 0.28f }, gunCol);
+            DrawCubeV((Vector3){ 0, 0.02f, 0.36f }, (Vector3){ 0.11f, 0.13f, 0.34f }, gunCol);
+            DrawCubeWiresV((Vector3){ 0, 0.02f, 0.36f }, (Vector3){ 0.11f, 0.13f, 0.34f }, darkCol);
+            DrawCubeV((Vector3){ 0, 0.095f, 0.36f }, (Vector3){ 0.05f, 0.015f, 0.30f }, gunSteel);
+            DrawCylinderEx((Vector3){ 0, 0.03f, 0.66f }, (Vector3){ 0, 0.03f, 0.94f }, 0.022f, 0.022f, 8, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.03f, 0.96f }, (Vector3){ 0.055f, 0.055f, 0.05f }, darkCol);
+            if (magVisible) {
+                rlPushMatrix();
+                rlTranslatef(0, magDrop, 0);
+                rlRotatef(-12.0f, 0, 0, 1);
+                DrawCubeV((Vector3){ 0, -0.24f, 0.40f }, (Vector3){ 0.075f, 0.30f, 0.13f }, darkCol);
+                DrawCubeV((Vector3){ 0, -0.39f, 0.40f }, (Vector3){ 0.08f, 0.04f, 0.14f }, gunCol);
+                rlPopMatrix();
+            }
+            DrawCubeV((Vector3){ -0.075f, 0.07f, 0.46f + bolt }, (Vector3){ 0.035f, 0.035f, 0.10f }, gunSteel);
+            DrawCubeV((Vector3){ 0.10f, 0.0f, 0.16f }, (Vector3){ 0.03f, 0.05f, 0.28f }, gunCol);
+        } else {
+            DrawCubeV((Vector3){ 0.02f, -0.03f, 0.16f }, (Vector3){ 0.09f, 0.13f, 0.24f }, gunCol);
+            DrawCubeV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.11f, 0.13f, 0.55f }, gunCol);
+            DrawCubeWiresV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.11f, 0.13f, 0.55f }, darkCol);
+            DrawCubeV((Vector3){ 0, 0.095f, 0.52f }, (Vector3){ 0.05f, 0.015f, 0.50f }, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.135f, 0.60f }, (Vector3){ 0.05f, 0.05f, 0.03f }, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.135f, 1.04f }, (Vector3){ 0.02f, 0.06f, 0.03f }, gunSteel);
+            if (e->elite) DrawCubeV((Vector3){ 0, 0.02f, 0.52f }, (Vector3){ 0.115f, 0.03f, 0.34f }, (Color){ 150, 30, 30, 255 });
+            DrawCylinderEx((Vector3){ 0, 0.035f, 0.80f }, (Vector3){ 0, 0.035f, 1.18f }, 0.021f, 0.021f, 8, gunSteel);
+            DrawCubeV((Vector3){ 0, 0.035f, 1.20f }, (Vector3){ 0.05f, 0.05f, 0.05f }, darkCol);
+            DrawCubeV((Vector3){ 0, -0.04f, 0.80f }, (Vector3){ 0.09f, 0.08f, 0.34f }, gunCol);
+            DrawCubeV((Vector3){ 0, -0.11f, 0.34f }, (Vector3){ 0.07f, 0.16f, 0.09f }, gunCol);
+            if (magVisible) {
+                rlPushMatrix();
+                rlTranslatef(0, magDrop, 0);
+                DrawCubeV((Vector3){ 0, -0.18f, 0.46f }, (Vector3){ 0.08f, 0.18f, 0.12f }, darkCol);
+                DrawCubeV((Vector3){ 0, -0.29f, 0.49f }, (Vector3){ 0.08f, 0.10f, 0.12f }, darkCol);
+                rlPopMatrix();
+            }
+            DrawCubeV((Vector3){ 0.075f, 0.075f, 0.70f + bolt }, (Vector3){ 0.035f, 0.035f, 0.10f }, gunSteel);
+        }
+
+        if (!winding) {
+            DrawCubeV(rightHand, (Vector3){ 0.13f, 0.13f, 0.13f }, skinCol);
+            DrawCubeV(leftHand, (Vector3){ 0.13f, 0.13f, 0.13f }, skinCol);
+        }
+        if (aiming && e->burstLeft == 0 && !winding && !e->reloading) {
+            float tipZ = isSniper ? 1.34f : (isSmg ? 0.92f : 1.10f);
+            DrawCubeV((Vector3){ 0, isSniper ? 0.16f : 0.035f, tipZ },
+                      (Vector3){ 0.008f, 0.008f, 0.5f }, (Color){ 255, 60, 40, 120 });
         }
         if (e->muzzleFlash > 0.0f) {
             float t = e->muzzleFlash / 0.06f;
             float s = 0.06f * (0.5f + 0.5f * t) * (0.7f + RandomFloat() * 0.6f);
-            Vector3 fp = { 0, 0.035f, 1.26f };
+            float flashZ = isSniper ? 1.53f : (isSmg ? 0.99f : 1.26f);
+            Vector3 fp = { 0, isSniper ? 0.02f : 0.035f, flashZ };
             DrawSphereEx(fp, s * 1.4f, 8, 6, (Color){ 255, 210, 90, 255 });
             DrawSphereEx(fp, s * 0.7f, 8, 6, (Color){ 255, 255, 240, 255 });
         }
-        rlPopMatrix(); // rifle pitch
+        rlPopMatrix(); // weapon pivot
 
-        // arms: shoulders -> elbows -> hands (hands track the rifle pitch)
+        // arms: shoulders -> elbows -> hands (map the real gun-space hand
+        // positions through the aim/reload transform so they stay attached)
         {
-            float th = aimPitch * DEG2RAD;
-            float cy = cosf(th), sy = sinf(th);
-            Vector3 hr = { 0.09f, -0.08f - pvY, 0.40f - pvZ };
-            Vector3 hl = { -0.09f, -0.05f - pvY, 0.80f - pvZ };
-            Vector3 hrw = { hr.x, pvY + hr.y * cy - hr.z * sy + lift, pvZ + hr.y * sy + hr.z * cy };
-            Vector3 hlw = { hl.x, pvY + hl.y * cy - hl.z * sy + lift, pvZ + hl.y * sy + hl.z * cy };
+            Vector3 hrw = EnemyGunToBody(rightHand, pvY, pvZ, pitchPose, gunTilt, lift, gunDip);
+            Vector3 hlw = EnemyGunToBody(leftHand, pvY, pvZ, pitchPose, gunTilt, lift, gunDip);
             if (winding) {
                 // melee: right arm cocks back high for a haymaker
                 Vector3 fist = { 0.16f, 0.56f, 0.40f };

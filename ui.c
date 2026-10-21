@@ -92,8 +92,8 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
 
     // ESC opens this overlay in multiplayer too; the world keeps running
     // behind it because the net pump must never stall.
-    DrawText(mp ? "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | ESC MENU (LIVE) | F6 SHADOWS"
-                : "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | ESC MENU | F6 SHADOWS",
+    DrawText(mp ? "WASD MOVE | SHIFT SPRINT | SPACE JUMP | 1/2/3 WEAPON | R RELOAD | RMB ADS | ESC MENU (LIVE) | F6 SHADOWS"
+                : "WASD MOVE | SHIFT SPRINT | SPACE JUMP | 1/2/3 WEAPON | R RELOAD | RMB ADS | ESC MENU | F6 SHADOWS",
              20, sh - 32, 15, (Color){ 220, 220, 220, 160 });
     DrawFPS(sw - 90, 10);
     DrawText(TextFormat("%.1f ms", GetFrameTime() * 1000.0f), sw - 110, 30, 16, (Color){ 200, 200, 200, 200 });
@@ -105,9 +105,12 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     // simulation, including the optional bots-fight-each-other mode
     bool hostOnly = g->net.active && g->net.mode == NET_CLIENT;
 
-    enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG, MR_AI,
-           MR_INFIGHT, MR_RESUME, MR_QUIT, MR_COUNT };
+    enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG,
+           MR_WORLD, MR_NEWMAP, MR_AI, MR_INFIGHT, MR_RESUME, MR_QUIT, MR_COUNT };
     static int msel = 0;
+    static int newMapArm = 0;
+    static float newMapArmTime = 0.0f;
+    static uint32_t newMapSeed = 0;
     const int rowH = 36;
     float panelW = 640.0f;
     float panelH = 92.0f + (float)MR_COUNT * (float)rowH + 30.0f;
@@ -137,12 +140,14 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT) || IsKeyPressed(KEY_D)) act = +1;
     if (hoverRow >= 0 && clicked) {
         msel = hoverRow;
-        if (hoverRow == MR_RESUME || hoverRow == MR_QUIT) activate = true;
+        if (hoverRow == MR_RESUME || hoverRow == MR_QUIT || hoverRow == MR_NEWMAP) activate = true;
         else {
             Rectangle r = { rowX, rowY0 + (float)hoverRow * rowH, rowW, (float)rowH - 4 };
             act = (mouse.x < r.x + r.width * 0.5f) ? -1 : +1;
         }
     }
+    if (newMapArm && GetTime() - newMapArmTime > 3.0) newMapArm = 0;
+    if (activate && msel != MR_NEWMAP) newMapArm = 0;
 
     // ---- apply ----
     bool changed = false;
@@ -152,6 +157,20 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         SetMasterVolume(g->masterVol);
     } else if (activate && msel == MR_QUIT) {
         *shouldQuit = true;
+    } else if (activate && msel == MR_NEWMAP) {
+        if (!hostOnly) {
+            if (!newMapArm) {
+                newMapArm = 1;
+                newMapArmTime = GetTime();
+                newMapSeed = (uint32_t)GetRandomValue(1, 2147483647);
+            } else {
+                WorldMode mode = (WorldMode)g->set.worldMode;
+                uint32_t seed = (mode == WORLD_CLASSIC) ? 0u : newMapSeed;
+                Game_NewMap(g, mode, seed);
+                newMapArm = 0;
+                changed = true;
+            }
+        }
     } else if (act != 0 || (activate && msel < MR_RESUME)) {
         if (activate && msel < MR_RESUME) act = +1; // ENTER cycles value rows
         switch (msel) {
@@ -202,6 +221,13 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
             g->set.fog = !g->set.fog;
             changed = true;
             break;
+        case MR_WORLD:
+            if (!hostOnly) {
+                g->set.worldMode = (g->set.worldMode + act + WORLD_MODE_COUNT) % WORLD_MODE_COUNT;
+                newMapArm = 0;
+                changed = true;
+            }
+            break;
         case MR_AI:
             if (!hostOnly) {
                 Game_SetAIActive(g, !g->set.aiEnabled);
@@ -222,26 +248,38 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     // ---- draw rows ----
     const char* labels[MR_COUNT] = {
         "RESOLUTION", "FULLSCREEN", "VSYNC", "SHADOWS", "FIELD OF VIEW",
-        "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG", "AI ENEMIES",
+        "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG",
+        "WORLD (NEXT MAP)", "NEW MAP (REGENERATE)", "AI ENEMIES",
         "BOTS FIGHT EACH OTHER",
         "RESUME", "QUIT"
     };
     static const char* shadowNames[4] = { "OFF", "LOW", "HIGH", "ULTRA" };
+    static const char* worldNames[WORLD_MODE_COUNT] = { "CLASSIC", "RANDOM 100", "RANDOM 256" };
     for (int i = 0; i < MR_COUNT; i++) {
         Rectangle r = { rowX, rowY0 + (float)i * rowH, rowW, (float)rowH - 4 };
         bool selRow = (i == msel);
-        bool isButton = (i == MR_RESUME || i == MR_QUIT);
+        bool isButton = (i == MR_RESUME || i == MR_QUIT || i == MR_NEWMAP);
         Color bg = selRow ? (Color){ 52, 58, 70, 255 } : (Color){ 34, 37, 44, 235 };
         if (isButton) {
-            bg = (i == MR_QUIT)
-               ? (selRow ? (Color){ 170, 55, 55, 255 } : (Color){ 90, 30, 30, 255 })
-               : (selRow ? (Color){ 70, 140, 90, 255 } : (Color){ 45, 85, 60, 255 });
+            if (i == MR_QUIT)
+                bg = selRow ? (Color){ 170, 55, 55, 255 } : (Color){ 90, 30, 30, 255 };
+            else if (i == MR_NEWMAP)
+                bg = (hostOnly) ? (Color){ 45, 46, 52, 200 }
+                   : (newMapArm ? (Color){ 170, 120, 35, 255 } : (selRow ? (Color){ 120, 92, 40, 255 } : (Color){ 72, 58, 34, 255 }));
+            else
+                bg = selRow ? (Color){ 70, 140, 90, 255 } : (Color){ 45, 85, 60, 255 };
         }
         DrawRectangleRec(r, bg);
         DrawRectangleLinesEx(r, 1.5f, selRow ? (Color){ 130, 200, 150, 255 } : (Color){ 70, 74, 84, 255 });
 
         if (isButton) {
-            DrawText(labels[i], (int)(r.x + (r.width - MeasureText(labels[i], 24)) / 2), (int)r.y + 5, 24, RAYWHITE);
+            const char* bl = labels[i];
+            Color bc = RAYWHITE;
+            if (i == MR_NEWMAP) {
+                if (hostOnly) { bl = "NEW MAP - HOST ONLY"; bc = (Color){ 150, 152, 160, 230 }; }
+                else if (newMapArm) { bl = "CONFIRM NEW MAP - PRESS AGAIN"; bc = (Color){ 255, 232, 150, 255 }; }
+            }
+            DrawText(bl, (int)(r.x + (r.width - MeasureText(bl, 24)) / 2), (int)r.y + 5, 24, bc);
             continue;
         }
 
@@ -259,6 +297,12 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         case MR_VOL: snprintf(val, sizeof(val), "%d%%", (int)(g->set.volume * 100)); break;
         case MR_LIGHTS: snprintf(val, sizeof(val), "%s", g->set.pointLights ? "ON" : "OFF"); break;
         case MR_FOG: snprintf(val, sizeof(val), "%s", g->set.fog ? "ON" : "OFF"); break;
+        case MR_WORLD: {
+            int wm = hostOnly ? (int)g->world.mode : g->set.worldMode;
+            if (wm < 0 || wm >= WORLD_MODE_COUNT) wm = 0;
+            snprintf(val, sizeof(val), "%s%s", worldNames[wm], hostOnly ? " (LIVE)" : "");
+            break;
+        }
         case MR_AI: snprintf(val, sizeof(val), "%s", hostOnly ? "HOST" : (g->set.aiEnabled ? "ON" : "OFF")); break;
         case MR_INFIGHT: snprintf(val, sizeof(val), "%s", hostOnly ? "HOST" : (g->set.infighting ? "ON" : "OFF")); break;
         default: val[0] = 0; break;

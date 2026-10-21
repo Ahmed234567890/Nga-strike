@@ -28,45 +28,72 @@ static Vector3 ShotDir(const Game* g, const Weapon* w, Vector3 forward) {
     return Vector3Normalize(d);
 }
 
-static void Barrels_Init(Barrel* b, int n) {
-    Vector3 spots[MAX_BARRELS] = {
-        { -8, 0, 6 }, { 8, 0, -6 }, { -14, 0, -14 },
-        { 14, 0, 14 }, { 0, 0, -12 }, { -6, 0, 30 },
-    };
-    for (int i = 0; i < n; i++) {
-        b[i].position = spots[i % 6];
+static void Barrels_Init(Barrel* b, const Vector3* spots, int n) {
+    if (n > MAX_BARRELS) n = MAX_BARRELS;
+    for (int i = 0; i < MAX_BARRELS; i++) {
+        b[i].position = (Vector3){ 0, -1000.0f, 0 };
         b[i].radius = BARREL_RADIUS;
         b[i].health = BARREL_HEALTH;
-        b[i].alive = true;
-        b[i].respawnTimer = 0;
+        b[i].alive = (i < n && spots);
+        if (b[i].alive) b[i].position = spots[i];
+        b[i].respawnTimer = b[i].alive ? 0.0f : 1e9f;
         b[i].flash = 0;
     }
 }
 
-// Street lamp heads (match the posts drawn in World_DrawLit props) and the
-// two cool accent floods added with the v3 map. Their ORDER here defines the
-// baked lamp indices: barrels 0..5, street 6..9, accents 10..11.
-static const Vector3 kStreetLampPos[4] = {
-    { -12, 4.6f, -12 }, { 12, 4.6f, 12 }, { -12, 4.6f, 14 }, { 14, 4.6f, -12 }
-};
-static const Vector3 kAccentLightPos[2] = {
-    { -14, 3.1f, -48.7f }, { -30, 3.2f, 21.05f }
-};
-#define LAMPIDX_STREET  MAX_BARRELS
-#define LAMPIDX_ACCENT  (MAX_BARRELS + 4)
-
 static void Game_BakeLampShadows(Game* g);
+
+static void Game_ResetRoundState(Game* g, int spawnIndex);
+
+static void Game_PlaceLocalPlayer(Game* g, int spawnIndex) {
+    int n = WORLD_MAX_PLAYER_SPAWNS;
+    if (spawnIndex < 0 || spawnIndex >= n) spawnIndex = 0;
+    Vector3 sp = Net_SpawnPos(spawnIndex);
+    if (!isfinite(sp.x) || !isfinite(sp.z) ||
+        fabsf(sp.x) > g->world.limit + 2.0f || fabsf(sp.z) > g->world.limit + 2.0f) {
+        sp = g->world.playerSpawns[spawnIndex];
+    }
+    sp.y = 0.0f;
+    g->player.position = sp;
+    g->player.velocity = (Vector3){ 0, 0, 0 };
+    g->player.health = PLAYER_MAX_HEALTH;
+    g->player.grounded = true;
+    g->player.spawnProtect = 2.0f;
+    g->yaw = Net_SpawnYaw(spawnIndex);
+    g->pitch = 0;
+    g->bob = (Vector2){ 0, 0 };
+    g->bobTime = 0;
+    g->adsBlend = 0;
+    g->sprintBlend = 0;
+    g->reloading = false;
+    g->reloadTimer = 0;
+    g->fireCd = 0;
+    g->switchTimer = 0;
+    g->muzzleTimer = 0;
+    g->recoilBack = 0;
+    g->landDip = 0;
+    g->trauma = 0;
+}
+
+static void Game_LoadWorldEntities(Game* g) {
+    Enemy_InitAll(g->enemies, MAX_ENEMIES, g->world.enemySpawns, g->world.enemySpawnCount);
+    Barrels_Init(g->barrels, g->world.barrelSpots, g->world.barrelCount);
+    Pickup_Init(g->pickups, g->world.pickupCount, g->world.pickupSpots, g->world.pickupTypes);
+    // Clients mirror the host's enemy state, so keep the locally-generated
+    // proxies dormant until the next snapshot (or welcome) fills them in.
+    if (!g->set.aiEnabled || g->net.mode == NET_CLIENT)
+        Enemy_SetActiveAll(g->enemies, MAX_ENEMIES, false);
+    Net_SetSpawnLayout(g->world.playerSpawns, WORLD_MAX_PLAYER_SPAWNS);
+}
 
 void Game_Init(Game* g) {
     memset(g, 0, sizeof(*g));
-    Settings_Default(&g->set);
+    Settings_Load(&g->set, "nga.cfg");
     Player_Init(&g->player);
     Weapon_Init(g->weapons, WEAPON_COUNT);
     g->curWeapon = 0;
-    World_Init(g->boxes, &g->boxCount);
-    Enemy_InitAll(g->enemies, MAX_ENEMIES);
-    Barrels_Init(g->barrels, MAX_BARRELS);
-    Pickup_Init(g->pickups, MAX_PICKUPS);
+    World_Generate(&g->world, (WorldMode)g->set.worldMode, g->set.worldSeed);
+    g->worldEpoch = 1;
     DamageFX_Init(g->dmgInds, MAX_DAMAGE_INDICATORS, g->dmgNums, MAX_DAMAGE_NUMBERS);
     FX_Init(g->particles, MAX_PARTICLES, g->tracers, MAX_TRACERS, g->decals, MAX_DECALS);
     Audio_Init(&g->audio);
@@ -95,27 +122,110 @@ void Game_Init(Game* g) {
     g->masterVol = 1.0f;
     g->footTimer = 0.35f;
 
-    // Bake static lamp shadows once (world geometry only: barrels would
-    // self-occlude their own lamp like a lampshade).
-    Game_BakeLampShadows(g);
-
     // LAN multiplayer bring-up (no-op when launched without --host/--join)
     Net_Init(&g->net);
-    if (g->net.mode == NET_HOST) {
-        Vector3 sp = Net_SpawnPos(0);
-        g->player.position = sp;
-        g->player.spawnProtect = 1.5f;
-        g->yaw = Net_SpawnYaw(0);
-    } else if (g->net.mode == NET_CLIENT) {
+    Net_SetWorld(&g->net, (uint8_t)g->world.mode, g->world.seed, g->worldEpoch);
+    Game_LoadWorldEntities(g);
+    Game_BakeLampShadows(g);
+
+    if (g->net.mode == NET_CLIENT) {
         // world state (enemies/barrels/pickups) comes from the host snapshots
         for (int i = 0; i < MAX_ENEMIES; i++) g->enemies[i].alive = false;
     }
+    Game_ResetRoundState(g, 0);
 }
 
 void Game_SetAIActive(Game* g, bool active) {
     g->set.aiEnabled = active;
     Enemy_SetActiveAll(g->enemies, MAX_ENEMIES, active);
     TraceLog(LOG_INFO, "AI enemies: %s", active ? "on" : "off");
+}
+
+static int Game_LocalSpawnIndex(const Game* g) {
+    if (g->net.mode == NET_CLIENT && g->net.myId > 0 && g->net.myId <= WORLD_MAX_PLAYER_SPAWNS)
+        return g->net.myId - 1;
+    return 0;
+}
+
+static void Game_ResetRoundState(Game* g, int spawnIndex) {
+    Weapon_Init(g->weapons, WEAPON_COUNT);
+    g->curWeapon = 0;
+    Player_Init(&g->player);
+    Game_PlaceLocalPlayer(g, spawnIndex);
+
+    g->fireCd = 0;
+    g->muzzleTimer = 0;
+    g->reloading = false;
+    g->reloadTimer = 0;
+    g->reloadTotal = 0;
+    g->reloadPrevT = 0;
+    g->reloadPlayedInsert = false;
+    g->reloadEmpty = false;
+    g->switchTimer = 0;
+    g->adsActive = false;
+    g->adsBlend = 0;
+    g->sprintBlend = 0;
+    g->recoilBack = 0;
+    g->lastHitTimer = 0;
+    g->damageFlash = 0;
+    g->hitMarkerTimer = 0;
+    g->hitMarkerType = 0;
+    g->headshotBanner = 0;
+    g->headshotStreak = 0;
+    g->headshotStreakTimer = 0;
+    g->trauma = 0;
+    g->boomTimer = 0;
+    g->landDip = 0;
+    g->moving = false;
+    g->moveSpeed = 0;
+    g->footTimer = 0.35f;
+    g->kills = 0;
+    g->score = 0;
+    g->shots = 0;
+    g->hits = 0;
+    g->headshots = 0;
+    g->helmetPops = 0;
+    g->gameTime = 0;
+    g->decalCursor = 0;
+    g->dustTimer = 0.12f;
+
+    DamageFX_Init(g->dmgInds, MAX_DAMAGE_INDICATORS, g->dmgNums, MAX_DAMAGE_NUMBERS);
+    FX_Init(g->particles, MAX_PARTICLES, g->tracers, MAX_TRACERS, g->decals, MAX_DECALS);
+    Net_ResetRound(&g->net);
+}
+
+void Game_NewMap(Game* g, WorldMode mode, uint32_t seed) {
+    if (g->net.mode == NET_CLIENT) return; // host authority
+    if (mode != WORLD_CLASSIC && mode != WORLD_RANDOM && mode != WORLD_RANDOM_256)
+        mode = WORLD_CLASSIC;
+    World_Generate(&g->world, mode, seed);
+    g->worldEpoch++;
+    g->set.worldMode = (int)mode;
+    g->set.worldSeed = g->world.seed ? g->world.seed : 1u;
+    Settings_Save(&g->set, "nga.cfg");
+    Net_SetWorld(&g->net, (uint8_t)mode, g->world.seed, g->worldEpoch);
+    Game_LoadWorldEntities(g);
+    Game_BakeLampShadows(g);
+    Game_ResetRoundState(g, 0);
+    TraceLog(LOG_INFO, "NEW MAP: mode=%d seed=%u epoch=%u (%d boxes, %d loot)",
+             (int)mode, g->world.seed, g->worldEpoch, g->world.boxCount, g->world.pickupCount);
+}
+
+void Game_ApplyRemoteWorld(Game* g, int mode, uint32_t seed, uint32_t epoch) {
+    if (g->net.mode != NET_CLIENT) return;
+    if (mode < 0 || mode >= WORLD_MODE_COUNT) mode = 0;
+    if (g->world.mode == (WorldMode)mode && g->world.seed == seed && g->worldEpoch == epoch)
+        return;
+    World_Generate(&g->world, (WorldMode)mode, seed);
+    g->worldEpoch = epoch;
+    g->net.worldMode = (uint8_t)mode;
+    g->net.worldSeed = seed;
+    g->net.worldEpoch = epoch;
+    Game_LoadWorldEntities(g);
+    Game_BakeLampShadows(g);
+    Game_ResetRoundState(g, Game_LocalSpawnIndex(g));
+    TraceLog(LOG_INFO, "REMOTE MAP: mode=%d seed=%u epoch=%u (%d boxes, %d loot)",
+             mode, seed, epoch, g->world.boxCount, g->world.pickupCount);
 }
 
 static BoundingBox BarrelBox(const Barrel* b) {
@@ -211,7 +321,7 @@ static void Game_Fire(Game* g, Weapon* w, Vector3 forward) {
     bool wallHit = false;
 
     Vector3 wallP = { 0 };
-    float wd = World_RayHitBoxes(ray, g->boxes, g->boxCount, &wallP);
+    float wd = World_RayHitBoxes(ray, g->world.boxes, g->world.boxCount, &wallP);
     if (wd > 0 && wd < nearest) { nearest = wd; hitPos = wallP; didHit = true; hitEnemy = -1; hitBarrel = -1; hitPeer = -1; wallHit = true; }
 
     for (int i = 0; i < MAX_ENEMIES; i++) {
@@ -595,7 +705,7 @@ void Game_Update(Game* g, float dt) {
         g->moveSpeed = 0.0f;
         g->player.velocity = (Vector3){ 0, 0, 0 };
     } else {
-        Player_Update(&g->player, g->boxes, g->boxCount, g->yaw, dt,
+        Player_Update(&g->player, g->world.boxes, g->world.boxCount, g->world.limit, g->yaw, dt,
                       g->adsActive, sprintWant, !menuOpen, &g->bob, &g->moving, &g->bobTime, &g->moveSpeed);
     }
     float sprintTarget = (g->moveSpeed > 9.2f && g->player.grounded) ? 1.0f : 0.0f;
@@ -621,13 +731,13 @@ void Game_Update(Game* g, float dt) {
     } else g->footTimer = 0.35f;
 
     unsigned pmaskBefore = 0;
-    for (int i = 0; i < MAX_PICKUPS; i++) if (g->pickups[i].active) pmaskBefore |= 1u << i;
+    for (int i = 0; i < g->world.pickupCount; i++) if (g->pickups[i].active) pmaskBefore |= 1u << i;
     if (!mpDead)
-        Pickup_Update(g->pickups, MAX_PICKUPS, &g->player, g->weapons, WEAPON_COUNT,
+        Pickup_Update(g->pickups, g->world.pickupCount, &g->player, g->weapons, WEAPON_COUNT,
                       &g->audio, dt, g->particles, MAX_PARTICLES);
     if (g->net.active && g->net.mode == NET_CLIENT) {
         // locally consumed a pickup? ask the host to consume it for everyone
-        for (int i = 0; i < MAX_PICKUPS; i++) {
+        for (int i = 0; i < g->world.pickupCount; i++) {
             if ((pmaskBefore >> i) & 1u) {
                 if (!g->pickups[i].active) {
                     Net_RequestPickup(&g->net, i);
@@ -786,7 +896,9 @@ void Game_Update(Game* g, float dt) {
             }
         }
         for (int k = 0; k < nt; k++) beforeHp[k] = tgts[k].player->health;
-        Enemy_UpdateAll(g->enemies, MAX_ENEMIES, tgts, nt, g->boxes, g->boxCount,
+        Enemy_UpdateAll(g->enemies, MAX_ENEMIES, tgts, nt,
+                        g->world.boxes, g->world.boxCount, g->world.limit,
+                        g->world.enemySpawns, g->world.enemySpawnCount,
                         &g->audio, dt, g->dmgInds, MAX_DAMAGE_INDICATORS,
                         &g->damageFlash, g->gameTime);
         for (int k = 0; k < nt; k++) {
@@ -903,7 +1015,13 @@ void Game_Update(Game* g, float dt) {
         ls.kills = g->kills;
         ls.deaths = g->net.selfDeaths;
         Net_Update(&g->net, dt, &ls, g->enemies, MAX_ENEMIES,
-                   g->pickups, MAX_PICKUPS, g->barrels, MAX_BARRELS);
+                   g->pickups, g->world.pickupCount, g->barrels, MAX_BARRELS);
+        if (g->net.mode == NET_CLIENT && g->net.worldChanged) {
+            g->net.worldChanged = false;
+            Game_ApplyRemoteWorld(g, g->net.worldMode, g->net.worldSeed, g->net.worldEpoch);
+            g->net.spawnApplied = true;
+            g->net.pendingSpawn = Game_LocalSpawnIndex(g);
+        }
         Game_ApplyNetEvents(g);
         // client spawn handshake: host assigned our spawn point
         if (g->net.mode == NET_CLIENT && g->net.connected && !g->net.spawnApplied) {
@@ -957,18 +1075,27 @@ static void DrawBarrels(const Barrel* barrels, int n, float time, bool fakeBlobs
 // (a lamp sitting inside a barrel lid would black out its whole pool).
 static void CastLampCasters(void* user) {
     Game* g = (Game*)user;
-    World_DrawLit(g->boxes, g->boxCount, 0.0f, g->camera.position);
+    World_DrawBoxes(&g->world);
 }
 
 static void Game_BakeLampShadows(Game* g) {
     if (!g->shadow.available) return;
     int n = 0;
-    for (int i = 0; i < MAX_BARRELS; i++)
+    for (int i = 0; i < g->world.barrelCount && n < SHADOW_MAX_BAKED_LAMPS; i++) {
+        if (!g->barrels[i].alive) continue;
         g->lampPos[n++] = (Vector3){ g->barrels[i].position.x, 1.5f, g->barrels[i].position.z };
-    for (int i = 0; i < 4; i++) g->lampPos[n++] = kStreetLampPos[i];
-    for (int i = 0; i < 2; i++) g->lampPos[n++] = kAccentLightPos[i];
+    }
+    for (int i = 0; i < g->world.streetLampCount && n < SHADOW_MAX_BAKED_LAMPS; i++)
+        g->lampPos[n++] = g->world.streetLamps[i];
+    for (int i = 0; i < g->world.accentLampCount && n < SHADOW_MAX_BAKED_LAMPS; i++)
+        g->lampPos[n++] = g->world.accentLamps[i];
     g->lampCount = n;
     Shadow_BakeLamps(&g->shadow, g->lampPos, n, CastLampCasters, g);
+    // Match the atmosphere to the arena size. The classic 42/65 fog would
+    // erase a 256x256 map; the big arena gets a much longer falloff.
+    Shadow_SetFog(&g->shadow, g->world.limit > 80.0f ? 105.0f : 42.0f,
+                  g->world.limit > 80.0f ? 140.0f : 65.0f,
+                  g->world.limit > 80.0f ? 0.62f : 0.78f);
 }
 
 // Dynamic casters for the per-frame lamp atlas: moving bodies only, drawn as
@@ -1048,24 +1175,28 @@ static void GatherLights(Game* g, PointLight* out, int* count) {
         cand[c].d2 = dx * dx + dz * dz;
         c++;
     }
-    for (int i = 0; i < 4 && c < 16; i++) {
-        float dx = kStreetLampPos[i].x - camPos.x, dz = kStreetLampPos[i].z - camPos.z;
+    int streetBase = g->world.barrelCount;
+    int accentBase = streetBase + g->world.streetLampCount;
+    for (int i = 0; i < g->world.streetLampCount && c < 16; i++) {
+        Vector3 lp = g->world.streetLamps[i];
+        float dx = lp.x - camPos.x, dz = lp.z - camPos.z;
         if (dx * dx + dz * dz > 55.0f * 55.0f) continue;
-        cand[c].l.pos = kStreetLampPos[i];
+        cand[c].l.pos = lp;
         cand[c].l.color = (Vector3){ 0.55f, 0.63f, 0.88f }; // cool moonlight-white
         cand[c].l.radius = 8.0f;
-        cand[c].l.lampIndex = LAMPIDX_STREET + i;
+        cand[c].l.lampIndex = streetBase + i;
         cand[c].d2 = dx * dx + dz * dz;
         c++;
     }
-    for (int i = 0; i < 2 && c < 16; i++) {
-        float dx = kAccentLightPos[i].x - camPos.x, dz = kAccentLightPos[i].z - camPos.z;
+    for (int i = 0; i < g->world.accentLampCount && c < 16; i++) {
+        Vector3 lp = g->world.accentLamps[i];
+        float dx = lp.x - camPos.x, dz = lp.z - camPos.z;
         if (dx * dx + dz * dz > 45.0f * 45.0f) continue;
-        cand[c].l.pos = kAccentLightPos[i];
+        cand[c].l.pos = lp;
         cand[c].l.color = (i == 0) ? (Vector3){ 0.42f, 1.00f, 1.25f }  // cyan flood
                                     : (Vector3){ 0.72f, 0.58f, 1.20f }; // violet flood
         cand[c].l.radius = (i == 0) ? 9.5f : 9.0f;
-        cand[c].l.lampIndex = LAMPIDX_ACCENT + i;
+        cand[c].l.lampIndex = accentBase + i;
         cand[c].d2 = dx * dx + dz * dz;
         c++;
     }
@@ -1109,10 +1240,17 @@ void Game_Draw(Game* g) {
     if (sh) {
         Shadow_UpdateLight(&g->shadow, g->camera.position, camFwd);
         Shadow_BeginCasterPass(&g->shadow);
-        World_DrawLit(g->boxes, g->boxCount, g->gameTime, g->camera.position);
+        // CLASSIC has hand-placed trees/props whose shadows are part of its
+        // look. Random cities only need the collision boxes: their painted
+        // pads, lane paint, grass and pebbles would just cost depth draws.
+        if (g->world.mode == WORLD_CLASSIC)
+            World_DrawLit(&g->world, g->gameTime, g->camera.position);
+        else
+            World_DrawCasters(&g->world);
         DrawBarrels(g->barrels, MAX_BARRELS, g->gameTime, false);
         Pickup_Draw(g->pickups, MAX_PICKUPS, g->camera.position);
-        Enemy_DrawAll(g->enemies, MAX_ENEMIES, g->player.position, g->gameTime, false);
+        Enemy_DrawAll(g->enemies, MAX_ENEMIES, g->player.position,
+                      g->camera.position, camFwd, g->gameTime, false);
         Player_DrawShadowBody(&g->player, g->yaw, g->pitch);
         Net_DrawBodies(&g->net, g->gameTime, false);
         Shadow_EndCasterPass(&g->shadow);
@@ -1126,8 +1264,8 @@ void Game_Draw(Game* g) {
 
     rlSetClipPlanes(0.08, 400.0);
     BeginMode3D(g->camera);
-    World_DrawSky(g->gameTime, g->camera.position);
-    World_DrawGrid();
+    World_DrawSky(g->gameTime, g->camera.position, g->world.limit);
+    World_DrawGrid(&g->world);
     if (sh) {
         PointLight lights[8];
         int nl = 0;
@@ -1135,10 +1273,11 @@ void Game_Draw(Game* g) {
         g->shadow.fogEnabled = g->set.fog;
         Shadow_ApplyLit(&g->shadow, g->camera.position, lights, nl);
     }
-    World_DrawLit(g->boxes, g->boxCount, g->gameTime, g->camera.position);
+    World_DrawLit(&g->world, g->gameTime, g->camera.position);
     DrawBarrels(g->barrels, MAX_BARRELS, g->gameTime, !sh);
     Pickup_Draw(g->pickups, MAX_PICKUPS, g->camera.position);
-    Enemy_DrawAll(g->enemies, MAX_ENEMIES, g->player.position, g->gameTime, !sh);
+    Enemy_DrawAll(g->enemies, MAX_ENEMIES, g->player.position,
+                  g->camera.position, camFwd, g->gameTime, !sh);
     Net_DrawBodies(&g->net, g->gameTime, true); // remote players (lit pass)
     if (sh) Shadow_Release(&g->shadow);
     FX_Draw(g->particles, MAX_PARTICLES, g->tracers, MAX_TRACERS, g->decals, MAX_DECALS);

@@ -12,8 +12,8 @@ typedef struct {
     Player player;
     Weapon weapons[WEAPON_COUNT];
     int curWeapon;
-    Box boxes[WORLD_MAX_BOXES];
-    int boxCount;
+    WorldMap world;
+    uint32_t worldEpoch;
     Enemy enemies[MAX_ENEMIES];
     Barrel barrels[MAX_BARRELS];
     Pickup pickups[MAX_PICKUPS];
@@ -91,5 +91,10 @@ void Game_Unload(Game* g);
 // Toggle the AI bots at runtime: off despawns every enemy and stops spawns,
 // on brings them back on staggered respawn timers.
 void Game_SetAIActive(Game* g, bool active);
+
+// Rebuild the arena and reset the round. Used by NEW MAP (host/single-player)
+// and by clients when the host's map epoch changes.
+void Game_NewMap(Game* g, WorldMode mode, uint32_t seed);
+void Game_ApplyRemoteWorld(Game* g, int mode, uint32_t seed, uint32_t epoch);
 
 #endif

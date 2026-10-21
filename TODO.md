@@ -119,10 +119,56 @@
       with no timeouts; OFF run produced zero infighting logs; settings
       round-trip and client `HOST` guard both passed
 
+## Phase 13: Deterministic City Maps, AI Weapons & Rendering ✅ DONE
+- [x] Preserved `CLASSIC` as the default and added `RANDOM 100` / `RANDOM 256`
+      modes (`world` 1/2 in `nga.cfg`); changing `WORLD (NEXT MAP)` only affects
+      the next regeneration
+- [x] Replaced scatter layout with a seeded road grid: 3×3 or 4×4 site grids,
+      sidewalk pads, curbs, lane dashes, perimeter ring, street furniture, lamps,
+      barrels and reachable pickups
+- [x] Added eight site builders: compound, warehouse, container yard, ruin,
+      checkpoint, plaza, market and construction; compact fallback only if a
+      site cannot be placed
+- [x] Reserved spawn/gate/loot/prop areas, checked site self-overlap, and kept a
+      flood-fill connectivity check with bounded retries and a safe open fallback
+- [x] Fixed the unreachable central container-yard loot and the site builders
+      that were silently never placed: compound roof/body and market
+      canopy/stall boxes were touching by floating-point epsilon, and several
+      fixed-size props collided on the 100-map (guardhouse/crates, warehouse
+      lean-to, checkpoint sandbag, plaza benches). All eight kinds now appear in
+      both 120-seed sweeps (100 and 256)
+- [x] Added host-owned world mode/seed/epoch sync in welcome and snapshots;
+      `NEW MAP` requires a second press, is host/single-player only, resets the
+      round and moves late joiners/reconnects onto the live world
+- [x] Gave bots three distinct guns (rifle 25 m, SMG 17 m, marksman sniper 52 m)
+      with separate damage, accuracy, cadence, burst and sound profiles; added
+      visible magazine reloads, marksman lane-holding, obstacle steering and
+      no sniper suppression fire
+- [x] Added enemy frustum/distance culling and a simple distant model; health
+      bars only draw within 42 m; random-map sun shadow casters use raw collision
+      boxes while Classic keeps full shadow casting
+- [x] Verified: 120 seeds per random mode with zero reachability failures and no
+      fallback; all eight site kinds used; runtime single-player remap, live
+      host/client remap (`seed 1502055072`, epoch 2), late join and reconnect
+      all matched; visual reload/LOD checks passed
+- [x] Performance spot check on the development machine (1280×720, HIGH
+      shadows, Intel UHD): 256 map ~170 AI / ~170 no-AI FPS, 100 map ~144 AI
+      FPS, Classic ~82 FPS; close-range combat ~136–154 FPS
+
 ## Open Items
 - [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
       frame, so enemies can't stand on platforms/raised geometry (they clip it).
       Needs a design pass plus on-platform visual testing.
+- [ ] **Bot navigation is steering, not pathfinding** — bots probe for walls and
+      wall-follow, which handles city corners but can still hesitate in deep
+      U-shaped sites or when a gate is off their approach line. A waypoint graph
+      or coarse nav grid is the next step if city layouts grow more complex.
+- [ ] **Keep the map generator under regression test in-repo** — the 120-seed
+      reachability/content harness and site-coverage checks currently live in
+      `/tmp`. Move them into the repository (or CI) so future site-builder edits
+      cannot silently drop archetypes again.
+- [ ] **Expose/share the random-map seed** — the seed is persisted and synced,
+      but there is no UI to copy or enter a specific seed for repeatable matches.
 - [ ] **Custom keybinds** (leftover from Phase 5) — controls are fixed in code.
 - [ ] **Optional join password for internet hosting** (deferred from Phase 9) —
       a shared secret in the HELLO, rejected on mismatch; empty = open like today.

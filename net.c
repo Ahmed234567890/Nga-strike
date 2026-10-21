@@ -31,6 +31,9 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     PktHdr h;
     uint8_t id, spawn, count;
+    uint8_t worldMode;
+    uint32_t worldSeed;
+    uint32_t worldEpoch;
 } PktWelcome;
 
 typedef struct __attribute__((packed)) {
@@ -41,11 +44,15 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     PktHdr h;
+    uint8_t worldMode;
+    uint32_t worldSeed;
+    uint32_t worldEpoch;
     uint8_t pcount;
     NetPlayerSnap players[NET_MAX_PLAYERS];
     uint8_t ecount;
     NetEnemySnap  enemies[MAX_ENEMIES];
-    uint8_t barrelMask, pickupMask;
+    uint8_t barrelMask;
+    uint32_t pickupMask;
 } PktSnapshot;
 
 typedef struct __attribute__((packed)) {
@@ -122,22 +129,78 @@ void Net_SetUPnPEnabled(bool on) { g_cfgUpnp = on; }
 // Spawns / colors / names
 // ---------------------------------------------------------------------------
 
-static const Vector3 kSpawns[NET_MAX_PLAYERS] = {
+static Vector3 g_spawns[NET_MAX_PLAYERS] = {
     { 0.0f, 0.0f, 12.0f },
     { -11.0f, 0.0f, -6.0f },
     { 10.0f, 0.0f, 22.0f },
     { 0.0f, 0.0f, -20.0f },
 };
+static int g_spawnCount = NET_MAX_PLAYERS;
+
+void Net_SetSpawnLayout(const Vector3* spawns, int count) {
+    if (!spawns || count < 1) return;
+    if (count > NET_MAX_PLAYERS) count = NET_MAX_PLAYERS;
+    for (int i = 0; i < count; i++) {
+        g_spawns[i] = spawns[i];
+        g_spawns[i].y = 0.0f;
+    }
+    g_spawnCount = count;
+}
 
 Vector3 Net_SpawnPos(int idx) {
-    idx %= NET_MAX_PLAYERS;
-    if (idx < 0) idx += NET_MAX_PLAYERS;
-    return kSpawns[idx];
+    if (g_spawnCount < 1) {
+        return (Vector3){ 0.0f, 0.0f, 12.0f };
+    }
+    idx %= g_spawnCount;
+    if (idx < 0) idx += g_spawnCount;
+    return g_spawns[idx];
 }
 
 float Net_SpawnYaw(int idx) {
     Vector3 p = Net_SpawnPos(idx);
     return atan2f(-p.x, -p.z); // face the map center
+}
+
+void Net_SetWorld(NetState* n, uint8_t mode, uint32_t seed, uint32_t epoch) {
+    if (!n) return;
+    n->worldMode = mode;
+    n->worldSeed = seed;
+    n->worldEpoch = epoch;
+}
+
+void Net_ResetRound(NetState* n) {
+    if (!n) return;
+    n->localDead = false;
+    n->respawnTimer = 0.0f;
+    n->lastAttackerId = 0;
+    n->lastAttackerTime = 0.0f;
+    n->selfDeaths = 0;
+    n->pendingShot = false;
+    n->eventCount = 0;
+    n->enemyShotCd = 0.0f;
+    for (int i = 0; i < MAX_PICKUPS; i++) n->pickupTaken[i] = 0.0f;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        n->esnapHave[i] = false;
+        n->esnapAlivePrev[i] = false;
+        memset(&n->esnap[i], 0, sizeof(n->esnap[i]));
+        memset(&n->esnapPrev[i], 0, sizeof(n->esnapPrev[i]));
+    }
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        NetPeer* p = &n->peers[i];
+        if (!p->used) continue;
+        Vector3 sp = Net_SpawnPos(i);
+        p->health = (float)PLAYER_MAX_HEALTH;
+        p->flags = NETF_ALIVE;
+        p->kills = 0;
+        p->deaths = 0;
+        p->pos = p->prevPos = p->targetPos = sp;
+        p->yaw = p->prevYaw = p->targetYaw = Net_SpawnYaw(i);
+        p->pitch = 0.0f;
+        p->speed = 0.0f;
+        p->haveSnap = false;
+        p->snapTime = 0.0f;
+        p->firingLatch = false;
+    }
 }
 
 Color Net_PlayerColor(int id) {
@@ -398,6 +461,9 @@ static void host_send_welcome(NetState* n, const struct sockaddr_in* to, int id,
     net_fill_hdr(n, &pk.h, P_WELCOME);
     pk.id = (uint8_t)id;
     pk.spawn = (uint8_t)spawn;
+    pk.worldMode = n->worldMode;
+    pk.worldSeed = n->worldSeed;
+    pk.worldEpoch = n->worldEpoch;
     int cnt = 1;
     for (int i = 0; i < NET_MAX_PLAYERS; i++)
         if (n->peers[i].used && n->peers[i].id != n->myId) cnt++;
@@ -413,6 +479,9 @@ static void host_send_snapshot(NetState* n, const NetLocalState* me,
     PktSnapshot pk;
     memset(&pk, 0, sizeof(pk));
     net_fill_hdr(n, &pk.h, P_SNAPSHOT);
+    pk.worldMode = n->worldMode;
+    pk.worldSeed = n->worldSeed;
+    pk.worldEpoch = n->worldEpoch;
 
     int idx = 0;
     NetPlayerSnap* s = &pk.players[idx++];
@@ -466,21 +535,31 @@ static void host_send_snapshot(NetState* n, const NetLocalState* me,
         if (e->state == E_STRAFE) fl |= NETEF_STRAFE;
         es->flags = fl;
         es->firing = (e->muzzleFlash > 0) ? 1 : 0;
+        es->weapon = (uint8_t)e->gun;
+        es->reloadPhase = (uint8_t)ClampF(e->reloadPhase * 255.0f, 0, 255);
+        es->reloading = e->reloading ? 1 : 0;
     }
 
-    uint8_t bmask = 0, pmask = 0;
+    uint8_t bmask = 0;
+    uint32_t pmask = 0;
     for (int i = 0; i < bc && i < 8; i++) if (barrels[i].alive) bmask |= (uint8_t)(1u << i);
-    for (int i = 0; i < pc && i < 8; i++) if (pickups[i].active) pmask |= (uint8_t)(1u << i);
+    for (int i = 0; i < pc && i < 32; i++) if (pickups[i].active) pmask |= (1u << i);
     pk.barrelMask = bmask;
     pk.pickupMask = pmask;
     n->pendingShot = false;
 
     // Wire format must be contiguous, but the struct has fixed-size arrays
     // (ecount/enemies sit after all four player slots in memory), so
-    // serialize explicitly: [hdr][pcount][players...][ecount][enemies...][bmask][pmask]
+    // serialize explicitly:
+    // [hdr][mode][seed][epoch][pcount][players...][ecount][enemies...][bmask][pmask]
     uint8_t out[sizeof(PktSnapshot)];
     memcpy(out, &pk.h, sizeof(PktHdr));
     int o = (int)sizeof(PktHdr);
+    out[o++] = pk.worldMode;
+    memcpy(out + o, &pk.worldSeed, sizeof(pk.worldSeed));
+    o += (int)sizeof(pk.worldSeed);
+    memcpy(out + o, &pk.worldEpoch, sizeof(pk.worldEpoch));
+    o += (int)sizeof(pk.worldEpoch);
     out[o++] = pk.pcount;
     memcpy(out + o, pk.players, (size_t)idx * sizeof(NetPlayerSnap));
     o += idx * (int)sizeof(NetPlayerSnap);
@@ -488,7 +567,8 @@ static void host_send_snapshot(NetState* n, const NetLocalState* me,
     memcpy(out + o, pk.enemies, (size_t)ecount * sizeof(NetEnemySnap));
     o += ecount * (int)sizeof(NetEnemySnap);
     out[o++] = pk.barrelMask;
-    out[o++] = pk.pickupMask;
+    memcpy(out + o, &pk.pickupMask, sizeof(pk.pickupMask));
+    o += (int)sizeof(pk.pickupMask);
     net_send_all(n, 0, out, o);
 }
 
@@ -647,6 +727,13 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
             }
             return;
         }
+        if (wp.worldMode != n->worldMode || wp.worldSeed != n->worldSeed ||
+            wp.worldEpoch != n->worldEpoch) {
+            n->worldMode = wp.worldMode;
+            n->worldSeed = wp.worldSeed;
+            n->worldEpoch = wp.worldEpoch;
+            n->worldChanged = true;
+        }
         if (!n->connected) {
             n->myId = wp.id;
             n->connected = true;
@@ -655,7 +742,8 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
             n->reconnectTimer = 0.0f;
             n->pendingSpawn = wp.spawn;
             n->spawnApplied = false;
-            TraceLog(LOG_INFO, "NET: connected as id %d (players: %d)", wp.id, wp.count);
+            TraceLog(LOG_INFO, "NET: connected as id %d (players: %d) world=%u/%u",
+                     wp.id, wp.count, wp.worldMode, wp.worldEpoch);
             Net_Feed(n, "CONNECTED TO HOST");
         }
         break;
@@ -689,9 +777,21 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
     }
     case P_SNAPSHOT: {
         if (n->mode != NET_CLIENT) return;
-        if (len < (int)(sizeof(PktHdr) + 1)) return;
         const uint8_t* q = buf + sizeof(PktHdr);
         int remain = len - (int)sizeof(PktHdr);
+        if (remain < 1 + (int)sizeof(uint32_t) * 2 + 1) return;
+        uint8_t worldMode = *q++;
+        uint32_t worldSeed = 0, worldEpoch = 0;
+        memcpy(&worldSeed, q, sizeof(worldSeed)); q += sizeof(worldSeed);
+        memcpy(&worldEpoch, q, sizeof(worldEpoch)); q += sizeof(worldEpoch);
+        remain -= 1 + (int)sizeof(uint32_t) * 2;
+        if (worldMode != n->worldMode || worldSeed != n->worldSeed ||
+            worldEpoch != n->worldEpoch) {
+            n->worldMode = worldMode;
+            n->worldSeed = worldSeed;
+            n->worldEpoch = worldEpoch;
+            n->worldChanged = true;
+        }
         uint8_t pcount = *q++;
         remain--;
         if (pcount > NET_MAX_PLAYERS) return;
@@ -731,7 +831,7 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         uint8_t ecount = *q++;
         remain--;
         if (ecount > MAX_ENEMIES) return;
-        if (remain < (int)(ecount * sizeof(NetEnemySnap) + 2)) return;
+        if (remain < (int)(ecount * sizeof(NetEnemySnap) + 1 + sizeof(uint32_t))) return;
         for (int i = 0; i < ecount && i < ec; i++) {
             n->esnapPrev[i] = n->esnap[i];
             n->esnapAlivePrev[i] = n->esnapHave[i] && (n->esnap[i].flags & NETEF_ALIVE);
@@ -742,8 +842,10 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         }
         n->esnapTime = n->netTime;
         uint8_t bmask = *q++;
-        uint8_t pmask = *q++;
-        for (int i = 0; i < pc && i < 8; i++) {
+        uint32_t pmask = 0;
+        memcpy(&pmask, q, sizeof(pmask));
+        q += sizeof(pmask);
+        for (int i = 0; i < pc && i < 32; i++) {
             bool hostActive = ((pmask >> i) & 1) != 0;
             if (hostActive) {
                 if (!pickups[i].active && (n->netTime - n->pickupTaken[i] > 0.6f))
@@ -960,6 +1062,15 @@ static void net_apply_enemies(NetState* n, Enemy* enemies, int count, float dt) 
         e->state = (c->flags & NETEF_COVER) ? E_COVER
                  : (c->flags & NETEF_STRAFE) ? E_STRAFE : E_CHASE;
         e->strafeDir = c->strafeDir < 0 ? -1.0f : 1.0f;
+        e->gun = (c->weapon <= ENEMY_GUN_SNIPER) ? c->weapon : ENEMY_GUN_RIFLE;
+        e->magSize = (e->gun == ENEMY_GUN_SMG) ? 24 : (e->gun == ENEMY_GUN_SNIPER ? 5 : 30);
+        e->reloadTotal = (e->gun == ENEMY_GUN_SMG) ? 1.45f
+                       : (e->gun == ENEMY_GUN_SNIPER ? 2.6f : 1.8f);
+        e->reloading = c->reloading != 0;
+        e->reloadPhase = (float)c->reloadPhase / 255.0f;
+        if (e->reloading) e->aimTimer = 0.0f;
+        if (c->firing) e->gunKick = 0.06f;
+        else if (e->gunKick > 0.0f) e->gunKick = fmaxf(0.0f, e->gunKick - dt * 2.6f);
 
         if (c->flags & NETEF_HURT) {
             if (e->hurtTimer <= 0) e->hurtTimer = 0.13f;
@@ -968,7 +1079,7 @@ static void net_apply_enemies(NetState* n, Enemy* enemies, int count, float dt) 
         // aim/windup telegraphs: the snapshot carries them as edge flags, so
         // re-arm the timers the draw code thresholds on (0.5 clears the >0.3
         // "aiming" check and keeps the aim laser visible like the host's)
-        e->aimTimer = (c->flags & NETEF_AIMING) ? 0.5f : 0.0f;
+        e->aimTimer = (!e->reloading && (c->flags & NETEF_AIMING)) ? 0.5f : 0.0f;
         e->windupTimer = (c->flags & NETEF_WINDING) ? 0.30f : 0.0f;
         if (c->firing) {
             if (e->muzzleFlash <= 0) {

@@ -1,21 +1,17 @@
 #include "pickup.h"
 #include "fx.h"
 
-void Pickup_Init(Pickup* pickups, int count) {
-    Pickup init[MAX_PICKUPS] = {
-        { { -30, 1.0f,  -5 }, PICKUP_AMMO,   true, 0, 0 },
-        { {  30, 1.0f,   5 }, PICKUP_AMMO,   true, 0, 0 },
-        // NOTE: keep clear of spawn (0,0): a cube in the player's face clips
-        // the near plane and strobes fullscreen whenever you turn/move.
-        { {   6, 1.0f,   9 }, PICKUP_AMMO,   true, 0, 0 },
-        { { -25, 1.0f, -25 }, PICKUP_AMMO,   true, 0, 0 },
-        { {  25, 1.0f,  25 }, PICKUP_HEALTH, true, 0, 0 },
-        { { -30, 1.0f,  25 }, PICKUP_HEALTH, true, 0, 0 },
-        { {  36.5f, 4.5f, 25 }, PICKUP_HEALTH, true, 0, 0 },
-        { {   0, 1.0f,  35 }, PICKUP_AMMO,   true, 0, 0 },
-    };
+void Pickup_Init(Pickup* pickups, int count, const Vector3* spots, const PickupType* types) {
     int n = count < MAX_PICKUPS ? count : MAX_PICKUPS;
-    for (int i = 0; i < n; i++) pickups[i] = init[i];
+    for (int i = 0; i < MAX_PICKUPS; i++) {
+        if (i < n && spots && types) {
+            pickups[i] = (Pickup){ spots[i], types[i], true, 0, 0 };
+        } else {
+            // Keep unused slots dormant so a smaller map cannot materialise
+            // stale loot at the origin after a map switch.
+            pickups[i] = (Pickup){ { 0, -1000.0f, 0 }, PICKUP_AMMO, false, 1e9f, 0 };
+        }
+    }
 }
 
 void Pickup_Update(Pickup* pickups, int count, Player* player, Weapon* weapons, int wc,

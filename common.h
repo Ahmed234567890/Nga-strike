@@ -34,7 +34,7 @@
 #define WEAPON_COUNT         3
 #define MAX_ENEMIES          6
 
-#define MAX_PICKUPS           8
+#define MAX_PICKUPS          20
 #define MAX_DAMAGE_INDICATORS 8
 #define MAX_DAMAGE_NUMBERS    16
 #define MAX_PARTICLES         256
@@ -125,6 +125,14 @@ typedef enum {
     ROLE_RUSHER = 2,
 } EnemyRole;
 
+// Visible AI weapon models. Role decides the default, but every bot gets its
+// own magazine/reload state so all of them animate reloads individually.
+typedef enum {
+    ENEMY_GUN_RIFLE = 0,
+    ENEMY_GUN_SMG = 1,
+    ENEMY_GUN_SNIPER = 2,
+} EnemyGun;
+
 typedef enum {
     HIT_MISS = -1,
     HIT_TORSO = 0,
@@ -175,6 +183,15 @@ typedef struct {
     Vector3 lastSeenPos;   // where the player was last spotted (AI v2)
     float   suppressTimer; // suppression-fire cooldown (AI v2)
     int     seed;
+    // Weapon / reload animation state. Clients mirror these from snapshots.
+    int     gun;
+    int     magAmmo;
+    int     magSize;
+    bool    reloading;
+    float   reloadTimer;
+    float   reloadTotal;
+    float   reloadPhase;   // 0..1 visual phase (also sent to clients)
+    float   gunKick;       // short recoil kick used by the draw code
 } Enemy;
 
 typedef struct {

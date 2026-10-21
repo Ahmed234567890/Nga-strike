@@ -2,6 +2,7 @@
 #define SETTINGS_H
 
 #include "common.h"
+#include <stdint.h>
 
 // Persistent player settings (nga.cfg in the game directory).
 // Loaded in main() BEFORE InitWindow so the game starts at the chosen size.
@@ -25,6 +26,8 @@ typedef struct {
     bool  fog;            // distance fog on/off
     bool  aiEnabled;      // AI enemies: spawn/respawn when on, no bots when off
     bool  infighting;     // bots also target/damage each other (chaos mode)
+    int   worldMode;      // 0 classic, 1 random 100, 2 random 256
+    uint32_t worldSeed;   // deterministic seed for the random layouts
 } Settings;
 
 void Settings_Default(Settings* s);

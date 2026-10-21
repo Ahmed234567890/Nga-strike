@@ -308,6 +308,10 @@ void Shadow_Init(ShadowMap* s) {
     memset(s, 0, sizeof(*s));
     s->enabled = true;
     s->fogEnabled = true;
+    s->fogColor = (Vector3){ 0.765f, 0.843f, 0.910f };
+    s->fogStart = 42.0f;
+    s->fogRange = 65.0f;
+    s->fogMax = 0.78f;
     s->quality = SHADOW_QUAL_ULTRA;
     s->halfSize = 46.0f;
     s->focusDist = 16.0f;
@@ -377,10 +381,10 @@ void Shadow_Init(ShadowMap* s) {
     Vector3 sunCol = { 0.98f, 0.93f, 0.84f };
     Vector3 ambSky = { 0.52f, 0.58f, 0.70f };
     Vector3 ambGnd = { 0.40f, 0.375f, 0.345f };
-    Vector3 fogCol = { 0.765f, 0.843f, 0.910f };
+    Vector3 fogCol = s->fogColor;
     float bias = 0.0005f;
     float normOff = 0.06f;
-    float fogStart = 42.0f, fogRange = 65.0f, fogMax = 0.78f;
+    float fogStart = s->fogStart, fogRange = s->fogRange, fogMax = s->fogMax;
     float specK = 0.10f, sat = 1.05f, con = 1.03f;
     if (s->locSunDir >= 0) rlSetUniform(s->locSunDir, &sun, RL_SHADER_UNIFORM_VEC3, 1);
     if (s->locSunColor >= 0) rlSetUniform(s->locSunColor, &sunCol, RL_SHADER_UNIFORM_VEC3, 1);
@@ -553,6 +557,17 @@ void Shadow_UpdateLampDyn(ShadowMap* s, Vector3 camPos, const Vector3* lampPos,
     s->lampDynReady = true;
 }
 
+void Shadow_SetFog(ShadowMap* s, float start, float range, float max) {
+    if (!s) return;
+    if (start < 1.0f) start = 1.0f;
+    if (range < 1.0f) range = 1.0f;
+    if (max < 0.0f) max = 0.0f;
+    if (max > 1.0f) max = 1.0f;
+    s->fogStart = start;
+    s->fogRange = range;
+    s->fogMax = max;
+}
+
 void Shadow_Unload(ShadowMap* s) {
     if (s->depthProg) { rlUnloadShaderProgram(s->depthProg); s->depthProg = 0; }
     if (s->litProg) { rlUnloadShaderProgram(s->litProg); s->litProg = 0; }
@@ -654,6 +669,10 @@ void Shadow_ApplyLit(ShadowMap* s, Vector3 camPos, const PointLight* lights, int
     if (s->locCamPos >= 0) rlSetUniform(s->locCamPos, c, RL_SHADER_UNIFORM_VEC3, 1);
     float fogOn = s->fogEnabled ? 1.0f : 0.0f;
     if (s->locFogOn >= 0) rlSetUniform(s->locFogOn, &fogOn, RL_SHADER_UNIFORM_FLOAT, 1);
+    if (s->locFogColor >= 0) rlSetUniform(s->locFogColor, &s->fogColor, RL_SHADER_UNIFORM_VEC3, 1);
+    if (s->locFogStart >= 0) rlSetUniform(s->locFogStart, &s->fogStart, RL_SHADER_UNIFORM_FLOAT, 1);
+    if (s->locFogRange >= 0) rlSetUniform(s->locFogRange, &s->fogRange, RL_SHADER_UNIFORM_FLOAT, 1);
+    if (s->locFogMax >= 0) rlSetUniform(s->locFogMax, &s->fogMax, RL_SHADER_UNIFORM_FLOAT, 1);
 
     int n = lightCount;
     if (n < 0) n = 0;

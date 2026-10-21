@@ -61,6 +61,8 @@ typedef struct {
     float halfSize;       // ortho half-extent in world units
     float focusDist;      // how far ahead of the camera the volume leans
     bool  fogEnabled;
+    Vector3 fogColor;
+    float fogStart, fogRange, fogMax;
     RenderTexture2D rt;
     unsigned int depthProg;
     unsigned int litProg;
@@ -121,6 +123,10 @@ typedef struct {
 
 void Shadow_Init(ShadowMap* s);
 void Shadow_Unload(ShadowMap* s);
+
+// Distance fog is normally tuned for the classic 100x100 arena. Large random
+// maps use a much longer falloff so the far cover does not vanish into haze.
+void Shadow_SetFog(ShadowMap* s, float start, float range, float max);
 
 // Quality tier (recreates the map if needed). quality 0 disables shadows.
 void Shadow_SetQuality(ShadowMap* s, int quality);
