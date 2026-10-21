@@ -47,18 +47,20 @@ void Player_DrawShadowBody(const Player* p, float yaw, float pitch) {
 }
 
 void Player_Update(Player* p, const Box* boxes, int boxCount, float yaw,
-                   float dt, bool ads, bool sprintWant, Vector2* bobOut,
-                   bool* movingOut, float* bobTime, float* speedOut) {
+                   float dt, bool ads, bool sprintWant, bool inputEnabled,
+                   Vector2* bobOut, bool* movingOut, float* bobTime, float* speedOut) {
     if (p->spawnProtect > 0.0f) p->spawnProtect -= dt;
 
     Vector3 flatForward = { sinf(yaw), 0.0f, cosf(yaw) };
     Vector3 right       = { -cosf(yaw), 0.0f, sinf(yaw) };
 
     Vector3 wish = { 0 };
-    if (IsKeyDown(KEY_W)) wish = Vector3Add(wish, flatForward);
-    if (IsKeyDown(KEY_S)) wish = Vector3Subtract(wish, flatForward);
-    if (IsKeyDown(KEY_D)) wish = Vector3Add(wish, right);
-    if (IsKeyDown(KEY_A)) wish = Vector3Subtract(wish, right);
+    if (inputEnabled) {
+        if (IsKeyDown(KEY_W)) wish = Vector3Add(wish, flatForward);
+        if (IsKeyDown(KEY_S)) wish = Vector3Subtract(wish, flatForward);
+        if (IsKeyDown(KEY_D)) wish = Vector3Add(wish, right);
+        if (IsKeyDown(KEY_A)) wish = Vector3Subtract(wish, right);
+    }
     bool hasInput = Vector3Length(wish) > 0.001f;
     if (hasInput) wish = Vector3Normalize(wish);
 

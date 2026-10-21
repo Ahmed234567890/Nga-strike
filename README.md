@@ -21,6 +21,7 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 
 - The **host** runs the world simulation (enemies, barrels, pickups) and relays events; clients send their player state at 30 Hz and render everyone and everything else from host snapshots (20 Hz).
 - **Co-op and PvP in one mode** — everyone fights the same AI enemies, and players can damage each other. Watch your fire.
+- **Live settings menu** — `Esc` opens the settings overlay during a match without pausing: the host keeps simulating, clients keep sending state, and snapshots keep flowing. Your character stands idle (and can still be shot) while it is open. On a client, **AI ENEMIES** is host-controlled and shown as `HOST`.
 - Kill feed, scoreboard, name tags, and per-player colors keep the match readable.
 - Dead players respawn after 3 seconds with a brief spawn shield, at a spawn point that isn't occupied.
 - Clients reconnect automatically if the host restarts; peers that go silent are dropped after ~10 s.
@@ -82,7 +83,7 @@ Running with no flags starts single-player, exactly as before.
 | `Space` | Jump |
 | `R` | Reload |
 | `1` `2` `3` / Mouse wheel | Switch weapon |
-| `Esc` | Pause menu & settings (single-player only — pausing would freeze networking in MP) |
+| `Esc` | Settings menu (single-player pauses the world; multiplayer keeps it running) |
 | `F6` | Toggle shadows |
 | `F11` | Toggle fullscreen |
 

@@ -90,8 +90,9 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
         DrawText(phase, bx + bw - MeasureText(phase, 16) , by - 22, 16, (Color){ 255, 220, 130, 230 });
     }
 
-    // LAN games have no local pause menu (it would freeze the net pump)
-    DrawText(mp ? "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | F6 SHADOWS"
+    // ESC opens this overlay in multiplayer too; the world keeps running
+    // behind it because the net pump must never stall.
+    DrawText(mp ? "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | ESC MENU (LIVE) | F6 SHADOWS"
                 : "WASD MOVE | SHIFT SPRINT | SPACE JUMP | R RELOAD | F INSPECT | RMB ADS | ESC MENU | F6 SHADOWS",
              20, sh - 32, 15, (Color){ 220, 220, 220, 160 });
     DrawFPS(sw - 90, 10);
@@ -100,6 +101,8 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
 
 void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     int sw = GetScreenWidth(), sh = GetScreenHeight();
+    // clients cannot change AI: the host owns enemy spawning/simulation
+    bool aiHostOnly = g->net.active && g->net.mode == NET_CLIENT;
 
     enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG, MR_AI,
            MR_RESUME, MR_QUIT, MR_COUNT };
@@ -113,7 +116,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
 
     DrawRectangleRec(panel, (Color){ 26, 28, 34, 246 });
     DrawRectangleLinesEx(panel, 3.0f, (Color){ 95, 100, 112, 255 });
-    const char* title = "SETTINGS";
+    const char* title = g->net.active ? "SETTINGS (LIVE)" : "SETTINGS";
     DrawText(title, (int)(panel.x + (panelW - MeasureText(title, 44)) / 2), (int)panel.y + 26, 44, RAYWHITE);
     DrawRectangle((int)panel.x + 24, (int)panel.y + 76, (int)panelW - 48, 2, (Color){ 95, 100, 112, 255 });
 
@@ -199,8 +202,10 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
             changed = true;
             break;
         case MR_AI:
-            Game_SetAIActive(g, !g->set.aiEnabled);
-            changed = true;
+            if (!aiHostOnly) {
+                Game_SetAIActive(g, !g->set.aiEnabled);
+                changed = true;
+            }
             break;
         }
     }
@@ -245,7 +250,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         case MR_VOL: snprintf(val, sizeof(val), "%d%%", (int)(g->set.volume * 100)); break;
         case MR_LIGHTS: snprintf(val, sizeof(val), "%s", g->set.pointLights ? "ON" : "OFF"); break;
         case MR_FOG: snprintf(val, sizeof(val), "%s", g->set.fog ? "ON" : "OFF"); break;
-        case MR_AI: snprintf(val, sizeof(val), "%s", g->set.aiEnabled ? "ON" : "OFF"); break;
+        case MR_AI: snprintf(val, sizeof(val), "%s", aiHostOnly ? "HOST" : (g->set.aiEnabled ? "ON" : "OFF")); break;
         default: val[0] = 0; break;
         }
         DrawText(labels[i], (int)r.x + 14, (int)r.y + 6, 20, (Color){ 215, 218, 226, 255 });

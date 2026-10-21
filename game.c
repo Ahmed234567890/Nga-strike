@@ -526,12 +526,19 @@ void Game_Update(Game* g, float dt) {
         Settings_Save(&g->set, "nga.cfg");
     }
     if (IsKeyPressed(KEY_F6) && g->shadow.available) g->shadow.enabled = !g->shadow.enabled;
-    if (IsKeyPressed(KEY_ESCAPE) && !g->net.active) { // MP: local pause would freeze the net pump
+    // ESC opens the settings menu. Single-player freezes the world behind it;
+    // multiplayer keeps the net pump, host AI and snapshots running, so only
+    // local gameplay input is suppressed while the overlay is up.
+    if (IsKeyPressed(KEY_ESCAPE)) {
         g->paused = !g->paused;
+        TraceLog(LOG_INFO, "menu %s (%s)", g->paused ? "opened" : "closed",
+                 g->net.active ? "multiplayer: world keeps running" : "single-player: world paused");
         if (g->paused) { EnableCursor(); SetMasterVolume(g->masterVol * 0.25f); }
         else { DisableCursor(); SetMasterVolume(g->masterVol); }
     }
-    if (g->paused) return; // settings menu (UI_DrawPauseMenu) handles all input while paused
+    if (g->paused && !g->net.active) return; // SP: settings menu freezes the world
+
+    bool menuOpen = g->paused; // MP only (SP returned above): keep the world live
 
 
     g->gameTime += dt;
@@ -541,7 +548,7 @@ void Game_Update(Game* g, float dt) {
     Weapon* w = &g->weapons[g->curWeapon];
     bool mpDead = g->net.active && g->net.localDead;
 
-    if (!mpDead) {
+    if (!mpDead && !menuOpen) {
     int keys[WEAPON_COUNT] = { KEY_ONE, KEY_TWO, KEY_THREE };
     for (int k = 0; k < WEAPON_COUNT; k++) {
         if (IsKeyPressed(keys[k]) && g->curWeapon != k) {
@@ -560,20 +567,20 @@ void Game_Update(Game* g, float dt) {
     }
     }
 
-    bool sprintHeld = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-    g->adsActive = !mpDead && IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !sprintHeld && g->sprintBlend < 0.5f;
+    bool sprintHeld = !menuOpen && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+    g->adsActive = !mpDead && !menuOpen && IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !sprintHeld && g->sprintBlend < 0.5f;
     float tblend = g->adsActive ? 1.0f : 0.0f;
     g->adsBlend += (tblend - g->adsBlend) * (1.0f - expf(-18.0f * dt));
     float baseFov = (float)g->set.fov;
     g->camera.fovy = baseFov + (w->adsFov - baseFov) * g->adsBlend + 4.0f * g->sprintBlend;
 
     float sensMult = 1.0f + (w->adsSens - 1.0f) * g->adsBlend;
-    Vector2 md = GetMouseDelta();
+    Vector2 md = menuOpen ? (Vector2){ 0, 0 } : GetMouseDelta();
     g->yaw -= md.x * g->sens * sensMult;
     g->pitch -= md.y * g->sens * sensMult;
     g->pitch = ClampF(g->pitch, -1.5f, 1.5f);
 
-    if (!mpDead && IsKeyPressed(KEY_SPACE) && g->player.grounded) {
+    if (!mpDead && !menuOpen && IsKeyPressed(KEY_SPACE) && g->player.grounded) {
         g->player.velocity.y = JUMP_SPEED;
         g->player.grounded = false;
         PlaySoundPitched(g->audio.jump, 0.95f + RandomFloat() * 0.1f);
@@ -589,7 +596,7 @@ void Game_Update(Game* g, float dt) {
         g->player.velocity = (Vector3){ 0, 0, 0 };
     } else {
         Player_Update(&g->player, g->boxes, g->boxCount, g->yaw, dt,
-                      g->adsActive, sprintWant, &g->bob, &g->moving, &g->bobTime, &g->moveSpeed);
+                      g->adsActive, sprintWant, !menuOpen, &g->bob, &g->moving, &g->bobTime, &g->moveSpeed);
     }
     float sprintTarget = (g->moveSpeed > 9.2f && g->player.grounded) ? 1.0f : 0.0f;
     g->sprintBlend += (sprintTarget - g->sprintBlend) * (1.0f - expf(-9.0f * dt));
@@ -686,16 +693,16 @@ void Game_Update(Game* g, float dt) {
             Audio_PlayReloadClick(&g->audio, 1.1f);
         }
     }
-    if (!mpDead && IsKeyPressed(KEY_R) && !g->reloading && w->ammoInMag < w->magSize && w->ammoReserve > 0) {
+    if (!mpDead && !menuOpen && IsKeyPressed(KEY_R) && !g->reloading && w->ammoInMag < w->magSize && w->ammoReserve > 0) {
         Game_StartReload(g, w);
     }
-    if (!mpDead && w->ammoInMag == 0 && w->ammoReserve > 0 && !g->reloading) {
+    if (!mpDead && !menuOpen && w->ammoInMag == 0 && w->ammoReserve > 0 && !g->reloading) {
         if ((w->autoFire && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             Game_StartReload(g, w);
         }
     }
 
-    bool wantFire = !mpDead && (w->autoFire ? IsMouseButtonDown(MOUSE_BUTTON_LEFT) : IsMouseButtonPressed(MOUSE_BUTTON_LEFT));
+    bool wantFire = !mpDead && !menuOpen && (w->autoFire ? IsMouseButtonDown(MOUSE_BUTTON_LEFT) : IsMouseButtonPressed(MOUSE_BUTTON_LEFT));
     if (wantFire && g->fireCd <= 0 && !g->reloading && w->ammoInMag > 0 &&
         g->switchTimer <= 0 && g->sprintBlend < 0.5f)
         Game_Fire(g, w, forward);

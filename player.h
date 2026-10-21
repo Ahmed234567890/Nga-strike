@@ -12,12 +12,14 @@
 #define PLAYER_STEP_UP       0.55f
 
 void Player_Init(Player* p);
-// sprintWant: Shift held (game.c gates on ADS etc). Reports horizontal
-// speed + walk-bob into speedOut/bobOut; movement uses acceleration,
-// stop friction, limited air control and auto step-up on curbs/stairs.
+// sprintWant: Shift held (game.c gates on ADS etc). inputEnabled=false ignores
+// WASD (used while a multiplayer menu is open) but still applies gravity and
+// collision so the player coasts to a stop and lands normally.
+// Reports horizontal speed + walk-bob into speedOut/bobOut; movement uses
+// acceleration, stop friction, limited air control and auto step-up.
 void Player_Update(Player* p, const Box* boxes, int boxCount, float yaw,
-                   float dt, bool ads, bool sprintWant, Vector2* bobOut,
-                   bool* movingOut, float* bobTime, float* speedOut);
+                   float dt, bool ads, bool sprintWant, bool inputEnabled,
+                   Vector2* bobOut, bool* movingOut, float* bobTime, float* speedOut);
 void Player_Respawn(Player* p);
 bool Player_TakeDamage(Player* p, float dmg);
 

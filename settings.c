@@ -1,5 +1,6 @@
 #include "settings.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 const ResOption kResOptions[] = {
@@ -25,23 +26,22 @@ void Settings_Load(Settings* s, const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) return;
     char key[64];
+    char val[64];
     char line[160];
     while (fgets(line, sizeof(line), f)) {
-        int iv;
-        float fv;
-        if (sscanf(line, "%63s %d", key, &iv) == 2) {
-            if (!strcmp(key, "res")) s->resIndex = iv;
-            else if (!strcmp(key, "fullscreen")) s->fullscreen = (iv != 0);
-            else if (!strcmp(key, "vsync")) s->vsync = (iv != 0);
-            else if (!strcmp(key, "shadows")) s->shadowQuality = iv;
-            else if (!strcmp(key, "fov")) s->fov = iv;
-            else if (!strcmp(key, "lights")) s->pointLights = (iv != 0);
-            else if (!strcmp(key, "fog")) s->fog = (iv != 0);
-            else if (!strcmp(key, "ai")) s->aiEnabled = (iv != 0);
-        } else if (sscanf(line, "%63s %f", key, &fv) == 2) {
-            if (!strcmp(key, "sens")) s->sens = fv;
-            else if (!strcmp(key, "volume")) s->volume = fv;
-        }
+        if (sscanf(line, "%63s %63s", key, val) != 2) continue;
+        int iv = atoi(val);
+        float fv = (float)atof(val);
+        if (!strcmp(key, "res")) s->resIndex = iv;
+        else if (!strcmp(key, "fullscreen")) s->fullscreen = (iv != 0);
+        else if (!strcmp(key, "vsync")) s->vsync = (iv != 0);
+        else if (!strcmp(key, "shadows")) s->shadowQuality = iv;
+        else if (!strcmp(key, "fov")) s->fov = iv;
+        else if (!strcmp(key, "sens")) s->sens = fv;
+        else if (!strcmp(key, "volume")) s->volume = fv;
+        else if (!strcmp(key, "lights")) s->pointLights = (iv != 0);
+        else if (!strcmp(key, "fog")) s->fog = (iv != 0);
+        else if (!strcmp(key, "ai")) s->aiEnabled = (iv != 0);
     }
     fclose(f);
 

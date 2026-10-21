@@ -94,6 +94,15 @@
 - [x] `--no-ai` launch flag for hosts/clients (pure PvP / empty arena); host is
       the AI authority, clients mirror the snapshot stream
 
+## Phase 11: Live Multiplayer Menu ✅ DONE
+- [x] `Esc` opens the settings overlay in host/client sessions without pausing:
+      the net pump, host AI simulation and snapshots keep running; local
+      movement/look/fire/reload/weapon-switch input is suppressed while it is
+      open, so the player stands idle (and vulnerable)
+- [x] `AI ENEMIES` is host-only on clients (row shows `HOST`, changes ignored)
+- [x] Fixed `sens`/`volume` never loading from `nga.cfg` (the integer-first
+      `sscanf` swallowed decimal values); full settings round-trip tested
+
 ## Open Items
 - [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
       frame, so enemies can't stand on platforms/raised geometry (they clip it).
