@@ -21,7 +21,8 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 
 - The **host** runs the world simulation (enemies, barrels, pickups) and relays events; clients send their player state at 30 Hz and render everyone and everything else from host snapshots (20 Hz).
 - **Co-op and PvP in one mode** — everyone fights the same AI enemies, and players can damage each other. Watch your fire.
-- **Live settings menu** — `Esc` opens the settings overlay during a match without pausing: the host keeps simulating, clients keep sending state, and snapshots keep flowing. Your character stands idle (and can still be shot) while it is open. On a client, **AI ENEMIES** is host-controlled and shown as `HOST`.
+- **Optional bot infighting** — turn on **BOTS FIGHT EACH OTHER** and bots treat other bots as valid targets and damage them too. They still pick the nearest visible target, so a close player can remain the focus. Host-controlled in multiplayer.
+- **Live settings menu** — `Esc` opens the settings overlay during a match without pausing: the host keeps simulating, clients keep sending state, and snapshots keep flowing. Your character stands idle (and can still be shot) while it is open. On a client, **AI ENEMIES** and **BOTS FIGHT EACH OTHER** are host-controlled and shown as `HOST`.
 - Kill feed, scoreboard, name tags, and per-player colors keep the match readable.
 - Dead players respawn after 3 seconds with a brief spawn shield, at a spawn point that isn't occupied.
 - Clients reconnect automatically if the host restarts; peers that go silent are dropped after ~10 s.
@@ -47,7 +48,9 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 
 AI bot enemies are simulated by the host. `--no-ai` starts that run with no bots
 at all (useful for pure PvP). The saved **AI ENEMIES** setting sets the default
-for future launches.
+for future launches. The saved **BOTS FIGHT EACH OTHER** setting makes bots
+target and damage each other as well as players; it is off by default and is
+controlled by the host in multiplayer.
 
 ### Playing over the internet (UPnP)
 
@@ -140,6 +143,7 @@ Settings are stored in `nga.cfg` next to the game and saved whenever you change 
 | Point Lights | on / off |
 | Distance Fog | on / off |
 | AI Enemies | on / off — off despawns every bot and stops spawning; on brings them back gradually |
+| Bots Fight Each Other | on / off — when on, bots also target and damage each other (nearest visible target still wins); host-controlled in multiplayer |
 
 ## Project Layout
 

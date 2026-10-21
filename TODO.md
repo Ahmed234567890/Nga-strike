@@ -103,6 +103,22 @@
 - [x] Fixed `sens`/`volume` never loading from `nga.cfg` (the integer-first
       `sscanf` swallowed decimal values); full settings round-trip tested
 
+## Phase 12: Bot Infighting ✅ DONE
+- [x] Added the persisted **BOTS FIGHT EACH OTHER** setting (`infighting` in
+      `nga.cfg`), default off so existing matches behave exactly as before
+- [x] Host/single-player authority: the host AI adds one target stub per living
+      bot, skips the shooter's own stub, and converts stub health loss into real
+      `Enemy_ApplyDamage` after the AI update; clients see health/death/respawn
+      through existing enemy snapshots (no protocol change)
+- [x] Added blood, death sound, blood decal and a log line on bot-on-bot kills;
+      bot kills award no player score or kill-feed credit
+- [x] Clients show `HOST` for this row and cannot change it, matching the existing
+      AI row; the host can toggle it live
+- [x] Verified: 75 s single-player run with 246 bot-vs-bot damage events and
+      7 bot kills; tag-team host/client smoke test logged 5 host infighting kills
+      with no timeouts; OFF run produced zero infighting logs; settings
+      round-trip and client `HOST` guard both passed
+
 ## Open Items
 - [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
       frame, so enemies can't stand on platforms/raised geometry (they clip it).

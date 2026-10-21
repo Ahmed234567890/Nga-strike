@@ -6,6 +6,37 @@ Documentation rules live in [`AGENTS.md`](AGENTS.md).
 
 ## 2026-10-21
 
+### Optional bot infighting — `BOTS FIGHT EACH OTHER` — `40117b6`
+
+- Added **BOTS FIGHT EACH OTHER** to the settings menu, persisted as
+  `infighting` in `nga.cfg` and default OFF so existing matches behave exactly
+  as before.
+- When ON, host/single-player AI adds every living bot as a valid target (one
+  fake `Player` stub per bot). A bot skips its own stub; target selection still
+  picks the nearest visible opponent and uses the real enemy eye position for
+  line-of-sight checks.
+- Stub health loss is converted back into `Enemy_ApplyDamage` after
+  `Enemy_UpdateAll`, so health, death, corpse/respawn timers and enemy snapshots
+  stay authoritative. No network protocol change was needed.
+- Bot-on-bot damage spawns blood; kills play the death sound, add a blood decal
+  and log `AI infighting: bot N was killed by another bot`. Bot kills award no
+  player score or kill-feed credit.
+- Host/single-player control only: clients see `HOST` and changes are ignored,
+  matching `AI ENEMIES`. The host can toggle infighting live.
+- Design note: bots still pick the nearest visible target, so a nearby player can
+  remain the focus; the setting makes other bots valid opponents rather than
+  forcing bots to ignore players.
+- Verification:
+  - Settings round-trip including `infighting` passed.
+  - Single-player idle 75 s: 246 bot-vs-bot damage events and 7 bot kills.
+  - Host/client 40 s smoke test: two players connected, the host logged 5
+    infighting kills, and neither side reported a timeout or silent-host error.
+  - Single-player OFF 35 s: zero infighting logs.
+  - Menu: single-player toggled off/on and persisted; the client-only run left
+    the `HOST` row unchanged.
+- Files: `settings.c`, `settings.h`, `ui.c`, `enemy.c`, `enemy.h`, `game.c`,
+  `README.md`, `TODO.md`.
+
 ### Multiplayer live settings menu + settings persistence — `9a55b20`
 
 - `Esc` now opens the settings overlay while hosting or joining. The match keeps
