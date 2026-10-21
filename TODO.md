@@ -115,7 +115,7 @@
 - [x] Clients show `HOST` for this row and cannot change it, matching the existing
       AI row; the host can toggle it live
 - [x] Verified: 75 s single-player run with 246 bot-vs-bot damage events and
-      7 bot kills; tag-team host/client smoke test logged 5 host infighting kills
+      7 bot kills; a host/client smoke test logged 5 host infighting kills
       with no timeouts; OFF run produced zero infighting logs; settings
       round-trip and client `HOST` guard both passed
 
