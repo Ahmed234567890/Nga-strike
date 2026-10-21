@@ -23,6 +23,7 @@ typedef struct {
     float volume;         // master volume 0..1
     bool  pointLights;    // colored point lights on/off
     bool  fog;            // distance fog on/off
+    bool  aiEnabled;      // AI enemies: spawn/respawn when on, no bots when off
 } Settings;
 
 void Settings_Default(Settings* s);

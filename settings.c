@@ -17,6 +17,7 @@ void Settings_Default(Settings* s) {
     s->volume = 1.0f;
     s->pointLights = true;
     s->fog = true;
+    s->aiEnabled = true;
 }
 
 void Settings_Load(Settings* s, const char* path) {
@@ -36,6 +37,7 @@ void Settings_Load(Settings* s, const char* path) {
             else if (!strcmp(key, "fov")) s->fov = iv;
             else if (!strcmp(key, "lights")) s->pointLights = (iv != 0);
             else if (!strcmp(key, "fog")) s->fog = (iv != 0);
+            else if (!strcmp(key, "ai")) s->aiEnabled = (iv != 0);
         } else if (sscanf(line, "%63s %f", key, &fv) == 2) {
             if (!strcmp(key, "sens")) s->sens = fv;
             else if (!strcmp(key, "volume")) s->volume = fv;
@@ -64,5 +66,6 @@ void Settings_Save(const Settings* s, const char* path) {
     fprintf(f, "volume %.3f\n", s->volume);
     fprintf(f, "lights %d\n", s->pointLights ? 1 : 0);
     fprintf(f, "fog %d\n", s->fog ? 1 : 0);
+    fprintf(f, "ai %d\n", s->aiEnabled ? 1 : 0);
     fclose(f);
 }

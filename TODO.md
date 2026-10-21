@@ -87,6 +87,13 @@
       ASan+UBSan with the host still joinable afterwards; mapping add/verify/
       remove exercised on a real router
 
+## Phase 10: AI Toggle ✅ DONE
+- [x] Pause-menu **AI ENEMIES** setting (persisted as `ai` in `nga.cfg`):
+      off despawns every bot, clears corpses and stops all spawning; on brings
+      them back on staggered respawn timers
+- [x] `--no-ai` launch flag for hosts/clients (pure PvP / empty arena); host is
+      the AI authority, clients mirror the snapshot stream
+
 ## Open Items
 - [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
       frame, so enemies can't stand on platforms/raised geometry (they clip it).

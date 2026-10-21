@@ -31,6 +31,7 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 ./nga_strike --host            # host on UDP port 7777 (also tries UPnP)
 ./nga_strike --host 9000       # host on a custom port
 ./nga_strike --host --no-upnp  # never touch the router (LAN-only)
+./nga_strike --host --no-ai    # pure PvP: no AI bots spawn at all
 ```
 
 ### Join a game
@@ -42,6 +43,10 @@ Up to **4 players** over a single UDP port (default **7777**), using a host-auth
 ```
 
 `--name NAME` sets the name shown in the kill feed, scoreboard and overhead tags.
+
+AI bot enemies are simulated by the host. `--no-ai` starts that run with no bots
+at all (useful for pure PvP). The saved **AI ENEMIES** setting sets the default
+for future launches.
 
 ### Playing over the internet (UPnP)
 
@@ -133,6 +138,7 @@ Settings are stored in `nga.cfg` next to the game and saved whenever you change 
 | Volume | 0–1 |
 | Point Lights | on / off |
 | Distance Fog | on / off |
+| AI Enemies | on / off — off despawns every bot and stops spawning; on brings them back gradually |
 
 ## Project Layout
 

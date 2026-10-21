@@ -101,7 +101,7 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
 void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     int sw = GetScreenWidth(), sh = GetScreenHeight();
 
-    enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG,
+    enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG, MR_AI,
            MR_RESUME, MR_QUIT, MR_COUNT };
     static int msel = 0;
     const int rowH = 36;
@@ -198,6 +198,10 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
             g->set.fog = !g->set.fog;
             changed = true;
             break;
+        case MR_AI:
+            Game_SetAIActive(g, !g->set.aiEnabled);
+            changed = true;
+            break;
         }
     }
     if (changed) Settings_Save(&g->set, "nga.cfg");
@@ -205,7 +209,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     // ---- draw rows ----
     const char* labels[MR_COUNT] = {
         "RESOLUTION", "FULLSCREEN", "VSYNC", "SHADOWS", "FIELD OF VIEW",
-        "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG",
+        "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG", "AI ENEMIES",
         "RESUME", "QUIT"
     };
     static const char* shadowNames[4] = { "OFF", "LOW", "HIGH", "ULTRA" };
@@ -241,6 +245,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         case MR_VOL: snprintf(val, sizeof(val), "%d%%", (int)(g->set.volume * 100)); break;
         case MR_LIGHTS: snprintf(val, sizeof(val), "%s", g->set.pointLights ? "ON" : "OFF"); break;
         case MR_FOG: snprintf(val, sizeof(val), "%s", g->set.fog ? "ON" : "OFF"); break;
+        case MR_AI: snprintf(val, sizeof(val), "%s", g->set.aiEnabled ? "ON" : "OFF"); break;
         default: val[0] = 0; break;
         }
         DrawText(labels[i], (int)r.x + 14, (int)r.y + 6, 20, (Color){ 215, 218, 226, 255 });

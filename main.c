@@ -13,12 +13,13 @@
 #include <string.h>
 
 static void PrintUsage(void) {
-    TraceLog(LOG_INFO, "usage: nga_strike [--host [port]] [--join IP[:port]] [--name NAME] [--no-upnp]");
+    TraceLog(LOG_INFO, "usage: nga_strike [--host [port]] [--join IP[:port]] [--name NAME] [--no-upnp] [--no-ai]");
     TraceLog(LOG_INFO, "  no flags        -> single-player (exactly as before)");
     TraceLog(LOG_INFO, "  --host          -> host (world authority) on UDP 7777; opens the");
     TraceLog(LOG_INFO, "                     port on the router via UPnP when possible");
     TraceLog(LOG_INFO, "  --join 1.2.3.4  -> client, connects to host (default port 7777)");
     TraceLog(LOG_INFO, "  --no-upnp       -> host only: don't ask the router to open the port");
+    TraceLog(LOG_INFO, "  --no-ai         -> start with no AI bots (pure PvP / empty arena)");
 }
 
 int main(int argc, char** argv) {
@@ -27,6 +28,7 @@ int main(int argc, char** argv) {
     char netAddr[64] = "";
     int netPort = NET_PORT_DEFAULT;
     char netName[16] = "";
+    bool noAI = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--host") == 0) {
             netMode = NET_HOST;
@@ -50,6 +52,8 @@ int main(int argc, char** argv) {
             snprintf(netName, sizeof(netName), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--no-upnp") == 0) {
             Net_SetUPnPEnabled(false);
+        } else if (strcmp(argv[i], "--no-ai") == 0) {
+            noAI = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             PrintUsage();
             return 0;
@@ -79,11 +83,13 @@ int main(int argc, char** argv) {
     Game_Init(&g);
     TraceLog(LOG_INFO, "Nga-Strike start: %dx%d windowed=%d shadows=%d vsync=%d", GetScreenWidth(), GetScreenHeight(), !IsWindowFullscreen(), st.shadowQuality, st.vsync ? 1 : 0);
     // apply persisted settings to the live game state
+    if (noAI) st.aiEnabled = false; // CLI override, not persisted
     g.set = st;
     g.sens = st.sens;
     g.masterVol = st.volume;
     Shadow_SetQuality(&g.shadow, st.shadowQuality);
     SetMasterVolume(st.volume);
+    if (!st.aiEnabled) Game_SetAIActive(&g, false);
 
     while (!WindowShouldClose() && !g.shouldQuit) {
         // keep viewRT matched to window size (resizable)

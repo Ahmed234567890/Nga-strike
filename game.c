@@ -112,6 +112,12 @@ void Game_Init(Game* g) {
     }
 }
 
+void Game_SetAIActive(Game* g, bool active) {
+    g->set.aiEnabled = active;
+    Enemy_SetActiveAll(g->enemies, MAX_ENEMIES, active);
+    TraceLog(LOG_INFO, "AI enemies: %s", active ? "on" : "off");
+}
+
 static BoundingBox BarrelBox(const Barrel* b) {
     Vector3 h = { b->radius, 0.65f, b->radius };
     Vector3 c = { b->position.x, 0.65f, b->position.z };
@@ -708,7 +714,7 @@ void Game_Update(Game* g, float dt) {
     // Each enemy picks its own target every frame: the local player plus one
     // stub Player per living remote peer (fed from their net state). Damage
     // the sim deals to a stub is shipped to that client as a damage event.
-    bool enemySim = !g->net.active || g->net.mode == NET_HOST;
+    bool enemySim = (!g->net.active || g->net.mode == NET_HOST) && g->set.aiEnabled;
     if (enemySim) {
         EnemyTarget tgts[NET_MAX_PLAYERS];
         Player stubs[NET_MAX_PLAYERS];

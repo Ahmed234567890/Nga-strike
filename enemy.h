@@ -20,6 +20,9 @@ typedef struct {
 } EnemyTarget;
 
 void Enemy_InitAll(Enemy* enemies, int count);
+// All-on: despawn everything and trickle the bots back in with staggered
+// respawn timers. All-off: despawn everything and stop (no corpses, no spawns).
+void Enemy_SetActiveAll(Enemy* enemies, int count, bool active);
 void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
                      const Box* boxes, int boxCount, Audio* audio, float dt,
                      DamageIndicator* dmgInds, int maxDmgInds,

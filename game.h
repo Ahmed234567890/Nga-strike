@@ -88,4 +88,8 @@ void Game_Update(Game* g, float dt);
 void Game_Draw(Game* g);
 void Game_Unload(Game* g);
 
+// Toggle the AI bots at runtime: off despawns every enemy and stops spawns,
+// on brings them back on staggered respawn timers.
+void Game_SetAIActive(Game* g, bool active);
+
 #endif

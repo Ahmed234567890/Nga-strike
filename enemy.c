@@ -128,6 +128,32 @@ void Enemy_InitAll(Enemy* enemies, int count) {
     }
 }
 
+void Enemy_SetActiveAll(Enemy* enemies, int count, bool active) {
+    for (int i = 0; i < count; i++) {
+        Enemy* e = &enemies[i];
+        // drop any live bot / corpse and forget pending AI timers
+        e->alive = false;
+        e->health = 0;
+        e->hurtTimer = 0;
+        e->flinchTimer = 0;
+        e->deathTimer = 0;
+        e->muzzleFlash = 0;
+        e->shootTimer = 0;
+        e->aimTimer = 0;
+        e->aimBlend = 0;
+        e->windupTimer = 0;
+        e->burstLeft = 0;
+        e->burstTimer = 0;
+        e->alertTimer = 0;
+        e->visibleTimer = 0;
+        e->dodgeTimer = 0;
+        e->suppressTimer = 0;
+        // re-enabling: respawn timers count down one after another so the
+        // bots come back gradually instead of all popping in on one frame
+        e->respawnTimer = active ? (0.6f + 0.55f * (float)i) : 0.0f;
+    }
+}
+
 void Enemy_AlertAll(Enemy* enemies, int count, Vector3 gunPos, float radius) {
     for (int i = 0; i < count; i++) {
         if (!enemies[i].alive) continue;
