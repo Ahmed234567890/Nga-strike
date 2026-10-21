@@ -24,6 +24,7 @@ typedef struct {
     bool  pointLights;    // colored point lights on/off
     bool  fog;            // distance fog on/off
     bool  aiEnabled;      // AI enemies: spawn/respawn when on, no bots when off
+    bool  infighting;     // bots also target/damage each other (chaos mode)
 } Settings;
 
 void Settings_Default(Settings* s);

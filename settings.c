@@ -19,6 +19,7 @@ void Settings_Default(Settings* s) {
     s->pointLights = true;
     s->fog = true;
     s->aiEnabled = true;
+    s->infighting = false;  // preserve the original bots-vs-players behavior
 }
 
 void Settings_Load(Settings* s, const char* path) {
@@ -42,6 +43,7 @@ void Settings_Load(Settings* s, const char* path) {
         else if (!strcmp(key, "lights")) s->pointLights = (iv != 0);
         else if (!strcmp(key, "fog")) s->fog = (iv != 0);
         else if (!strcmp(key, "ai")) s->aiEnabled = (iv != 0);
+        else if (!strcmp(key, "infighting")) s->infighting = (iv != 0);
     }
     fclose(f);
 
@@ -67,5 +69,6 @@ void Settings_Save(const Settings* s, const char* path) {
     fprintf(f, "lights %d\n", s->pointLights ? 1 : 0);
     fprintf(f, "fog %d\n", s->fog ? 1 : 0);
     fprintf(f, "ai %d\n", s->aiEnabled ? 1 : 0);
+    fprintf(f, "infighting %d\n", s->infighting ? 1 : 0);
     fclose(f);
 }

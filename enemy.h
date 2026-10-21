@@ -11,9 +11,12 @@ typedef struct {
 } HitResult;
 
 // Host/SP enemy brain targets: one entry per living player (the local one plus
-// a stub per remote peer). Each enemy picks its own nearest visible target.
+// a stub per remote peer) and, when bot infighting is enabled, one per living
+// bot. Each enemy picks its own nearest visible target.
 typedef struct {
     Player* player;
+    Vector3 eye;       // target eye position used for line-of-sight/aim
+    int     enemyId;   // >= 0 when this target is a bot: its enemies[] index
     bool    moving;    // anim/accuracy hints (from the owner's state)
     bool    airborne;
     bool    isLocal;   // hurt feedback (flash/indicator/sound) belongs to this machine

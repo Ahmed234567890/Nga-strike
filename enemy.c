@@ -239,6 +239,8 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         // pick this enemy's target: nearest living player, biased toward ones
         // it can actually see. The local player and each remote peer (via a
         // stub fed from its net state) compete here, per enemy, every frame.
+        // With infighting on, one stub per living bot also competes; a bot
+        // skips its own entry so it can never shoot itself.
         int tbest = 0;
         float tbestScore = 1e30f;
         {
@@ -247,18 +249,19 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
             if (e->role == ROLE_MARKSMAN) seer += 8.0f;
             for (int k = 0; k < targetCount; k++) {
                 const EnemyTarget* t = &targets[k];
+                if (t->enemyId == i) continue; // never target self
                 if (t->player->health <= 0) continue;
                 float d = Vector3DistanceSqr(e->position, t->player->position);
                 float score = d;
                 if (targetCount > 1 && (!e->alive || d > seer * seer ||
-                    !World_LOS(ee, PlayerEyePos(t->player), boxes, boxCount)))
+                    !World_LOS(ee, t->eye, boxes, boxCount)))
                     score += 400.0f; // unseen targets lose to visible ones
                 if (score < tbestScore) { tbestScore = score; tbest = k; }
             }
         }
         const EnemyTarget* tgt = &targets[tbest];
         Player* player = tgt->player;          // this enemy's chosen opponent
-        Vector3 playerEye = PlayerEyePos(player);
+        Vector3 playerEye = tgt->eye;
 
         if (!e->alive) {
             if (e->deathTimer > 0) e->deathTimer -= dt;

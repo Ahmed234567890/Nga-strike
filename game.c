@@ -719,16 +719,21 @@ void Game_Update(Game* g, float dt) {
 
     // Enemy AI: single-player + host simulate it; clients mirror snapshots.
     // Each enemy picks its own target every frame: the local player plus one
-    // stub Player per living remote peer (fed from their net state). Damage
-    // the sim deals to a stub is shipped to that client as a damage event.
+    // stub Player per living remote peer (fed from their net state). With
+    // infighting on, one stub per living bot also competes as a target; bot
+    // stubs take damage from the AI, then that damage is applied to the real
+    // enemy after the update. Clients see the results through snapshots.
     bool enemySim = (!g->net.active || g->net.mode == NET_HOST) && g->set.aiEnabled;
     if (enemySim) {
-        EnemyTarget tgts[NET_MAX_PLAYERS];
-        Player stubs[NET_MAX_PLAYERS];
-        float beforeHp[NET_MAX_PLAYERS];
-        int tgtIds[NET_MAX_PLAYERS];
+        enum { MAX_TARGETS = NET_MAX_PLAYERS + MAX_ENEMIES };
+        EnemyTarget tgts[MAX_TARGETS];
+        Player stubs[MAX_TARGETS];
+        float beforeHp[MAX_TARGETS];
+        int tgtIds[MAX_TARGETS];
         int nt = 0;
         tgts[nt].player = &g->player;
+        tgts[nt].eye = PlayerEyePos(&g->player);
+        tgts[nt].enemyId = -1;
         tgts[nt].moving = g->moving;
         tgts[nt].airborne = !g->player.grounded;
         tgts[nt].isLocal = true;
@@ -747,6 +752,8 @@ void Game_Update(Game* g, float dt) {
                 st->health = p->health;
                 st->spawnProtect = 0;
                 tgts[nt].player = st;
+                tgts[nt].eye = PlayerEyePos(st);
+                tgts[nt].enemyId = -1;
                 tgts[nt].moving = (p->flags & NETF_MOVING) != 0;
                 tgts[nt].airborne = false;
                 tgts[nt].isLocal = false;
@@ -754,13 +761,57 @@ void Game_Update(Game* g, float dt) {
                 nt++;
             }
         }
+        if (g->set.infighting) {
+            for (int i = 0; i < MAX_ENEMIES; i++) {
+                const Enemy* e = &g->enemies[i];
+                if (!e->alive) continue;
+                Player* st = &stubs[nt];
+                *st = g->player; // baseline fields, then override
+                // Player.position is at the feet; enemy.position is body center.
+                st->position = (Vector3){ e->position.x, e->position.y - 0.9f, e->position.z };
+                st->velocity = (Vector3){ 0, 0, 0 };
+                st->grounded = true;
+                st->health = e->health;
+                st->spawnProtect = 0; // bots must not inherit spawn protection
+                tgts[nt].player = st;
+                tgts[nt].eye = EnemyEyePos(e);
+                tgts[nt].enemyId = i;
+                // Bots strafe/advance constantly; treat their target as moving
+                // so infighting does not become laser-accurate.
+                tgts[nt].moving = true;
+                tgts[nt].airborne = false;
+                tgts[nt].isLocal = false;
+                tgtIds[nt] = -1;
+                nt++;
+            }
+        }
         for (int k = 0; k < nt; k++) beforeHp[k] = tgts[k].player->health;
         Enemy_UpdateAll(g->enemies, MAX_ENEMIES, tgts, nt, g->boxes, g->boxCount,
                         &g->audio, dt, g->dmgInds, MAX_DAMAGE_INDICATORS,
                         &g->damageFlash, g->gameTime);
-        for (int k = 1; k < nt; k++) {
+        for (int k = 0; k < nt; k++) {
             float dealt = beforeHp[k] - tgts[k].player->health;
-            if (dealt > 0.01f) {
+            if (dealt <= 0.01f) continue;
+            int eidx = tgts[k].enemyId;
+            if (eidx >= 0) {
+                // The AI shot a bot stub. Translate that health loss into real
+                // enemy damage so health, death, respawn and snapshots stay in
+                // one authoritative place.
+                Enemy* victim = &g->enemies[eidx];
+                if (!victim->alive) continue;
+                HitResult r = Enemy_ApplyDamage(victim, dealt, HIT_TORSO);
+                FX_SpawnBlood(g->particles, MAX_PARTICLES, victim->position,
+                              r.killed ? 10 : 4);
+                if (r.killed) {
+                    PlaySoundPitched(g->audio.enemyDie, 0.9f + RandomFloat() * 0.2f);
+                    FX_AddDecal(g->decals, MAX_DECALS,
+                                (Vector3){ victim->position.x, 0.10f, victim->position.z },
+                                0.5f, (Color){ 140, 10, 10, 180 }, &g->decalCursor);
+                    TraceLog(LOG_INFO, "AI infighting: bot %d was killed by another bot", eidx);
+                }
+                continue;
+            }
+            if (tgtIds[k] > 0) {
                 // nearby strike direction for the victim's damage indicator
                 Vector3 ap = tgts[k].player->position;
                 float bd = 1e30f;

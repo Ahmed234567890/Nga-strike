@@ -101,11 +101,12 @@ void UI_DrawHUD(const Player* player, const Weapon* w, const Weapon* weapons,
 
 void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     int sw = GetScreenWidth(), sh = GetScreenHeight();
-    // clients cannot change AI: the host owns enemy spawning/simulation
-    bool aiHostOnly = g->net.active && g->net.mode == NET_CLIENT;
+    // clients cannot change AI authority: the host owns enemy spawning and
+    // simulation, including the optional bots-fight-each-other mode
+    bool hostOnly = g->net.active && g->net.mode == NET_CLIENT;
 
     enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG, MR_AI,
-           MR_RESUME, MR_QUIT, MR_COUNT };
+           MR_INFIGHT, MR_RESUME, MR_QUIT, MR_COUNT };
     static int msel = 0;
     const int rowH = 36;
     float panelW = 640.0f;
@@ -202,8 +203,15 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
             changed = true;
             break;
         case MR_AI:
-            if (!aiHostOnly) {
+            if (!hostOnly) {
                 Game_SetAIActive(g, !g->set.aiEnabled);
+                changed = true;
+            }
+            break;
+        case MR_INFIGHT:
+            if (!hostOnly) {
+                g->set.infighting = !g->set.infighting;
+                TraceLog(LOG_INFO, "AI infighting: %s", g->set.infighting ? "on" : "off");
                 changed = true;
             }
             break;
@@ -215,6 +223,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     const char* labels[MR_COUNT] = {
         "RESOLUTION", "FULLSCREEN", "VSYNC", "SHADOWS", "FIELD OF VIEW",
         "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG", "AI ENEMIES",
+        "BOTS FIGHT EACH OTHER",
         "RESUME", "QUIT"
     };
     static const char* shadowNames[4] = { "OFF", "LOW", "HIGH", "ULTRA" };
@@ -250,7 +259,8 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         case MR_VOL: snprintf(val, sizeof(val), "%d%%", (int)(g->set.volume * 100)); break;
         case MR_LIGHTS: snprintf(val, sizeof(val), "%s", g->set.pointLights ? "ON" : "OFF"); break;
         case MR_FOG: snprintf(val, sizeof(val), "%s", g->set.fog ? "ON" : "OFF"); break;
-        case MR_AI: snprintf(val, sizeof(val), "%s", aiHostOnly ? "HOST" : (g->set.aiEnabled ? "ON" : "OFF")); break;
+        case MR_AI: snprintf(val, sizeof(val), "%s", hostOnly ? "HOST" : (g->set.aiEnabled ? "ON" : "OFF")); break;
+        case MR_INFIGHT: snprintf(val, sizeof(val), "%s", hostOnly ? "HOST" : (g->set.infighting ? "ON" : "OFF")); break;
         default: val[0] = 0; break;
         }
         DrawText(labels[i], (int)r.x + 14, (int)r.y + 6, 20, (Color){ 215, 218, 226, 255 });
