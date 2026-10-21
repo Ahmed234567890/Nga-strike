@@ -163,6 +163,7 @@ Settings are stored in `nga.cfg` next to the game and saved whenever you change 
 ## Notes
 
 - Optional sounds `hit.mp3`, `enemy_hurt.mp3` and `pickup.mp3` are not bundled. The game logs `Missing sound: ... (using silent fallback)` and keeps going — drop the files in the project folder to enable those events.
+- See [`CHANGELOG.md`](CHANGELOG.md) for documented changes and [`AGENTS.md`](AGENTS.md) for documentation, build and commit conventions.
 - See [`TODO.md`](TODO.md) for the improvement plan and known future work.
 
 ## License
