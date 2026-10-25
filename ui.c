@@ -106,7 +106,7 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     bool hostOnly = g->net.active && g->net.mode == NET_CLIENT;
 
     enum { MR_RES, MR_FULL, MR_VSYNC, MR_SHADOW, MR_FOV, MR_SENS, MR_VOL, MR_LIGHTS, MR_FOG,
-           MR_WORLD, MR_NEWMAP, MR_AI, MR_INFIGHT, MR_RESUME, MR_QUIT, MR_COUNT };
+           MR_WORLD, MR_NEWMAP, MR_COPYSEED, MR_AI, MR_INFIGHT, MR_RESUME, MR_QUIT, MR_COUNT };
     static int msel = 0;
     static int newMapArm = 0;
     static float newMapArmTime = 0.0f;
@@ -140,7 +140,8 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT) || IsKeyPressed(KEY_D)) act = +1;
     if (hoverRow >= 0 && clicked) {
         msel = hoverRow;
-        if (hoverRow == MR_RESUME || hoverRow == MR_QUIT || hoverRow == MR_NEWMAP) activate = true;
+        if (hoverRow == MR_RESUME || hoverRow == MR_QUIT ||
+            hoverRow == MR_NEWMAP || hoverRow == MR_COPYSEED) activate = true;
         else {
             Rectangle r = { rowX, rowY0 + (float)hoverRow * rowH, rowW, (float)rowH - 4 };
             act = (mouse.x < r.x + r.width * 0.5f) ? -1 : +1;
@@ -164,12 +165,21 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
                 newMapArmTime = GetTime();
                 newMapSeed = (uint32_t)GetRandomValue(1, 2147483647);
             } else {
-                WorldMode mode = (WorldMode)g->set.worldMode;
+                WorldMode mode = g->nextWorldMode;
                 uint32_t seed = (mode == WORLD_CLASSIC) ? 0u : newMapSeed;
                 Game_NewMap(g, mode, seed);
                 newMapArm = 0;
                 changed = true;
             }
+        }
+    } else if (activate && msel == MR_COPYSEED) {
+        if (g->world.mode == WORLD_CLASSIC || g->world.seed == 0) {
+            TraceLog(LOG_INFO, "MAP SEED: classic layout has no seed");
+            if (g->net.active) Net_Feed(&g->net, "CLASSIC MAP - NO SEED");
+        } else {
+            SetClipboardText(TextFormat("%u", g->world.seed));
+            TraceLog(LOG_INFO, "MAP SEED %u copied to clipboard", g->world.seed);
+            if (g->net.active) Net_Feed(&g->net, "MAP SEED COPIED");
         }
     } else if (act != 0 || (activate && msel < MR_RESUME)) {
         if (activate && msel < MR_RESUME) act = +1; // ENTER cycles value rows
@@ -223,9 +233,12 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
             break;
         case MR_WORLD:
             if (!hostOnly) {
-                g->set.worldMode = (g->set.worldMode + act + WORLD_MODE_COUNT) % WORLD_MODE_COUNT;
+                g->nextWorldMode = (WorldMode)(((int)g->nextWorldMode + act +
+                                                WORLD_MODE_COUNT) % WORLD_MODE_COUNT);
                 newMapArm = 0;
-                changed = true;
+                // The active mode/seed stay in nga.cfg until NEW MAP actually
+                // builds the selection, so a restart without regenerating
+                // restores the city that is currently on screen.
             }
             break;
         case MR_AI:
@@ -249,8 +262,8 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     const char* labels[MR_COUNT] = {
         "RESOLUTION", "FULLSCREEN", "VSYNC", "SHADOWS", "FIELD OF VIEW",
         "SENSITIVITY", "VOLUME", "POINT LIGHTS", "DISTANCE FOG",
-        "WORLD (NEXT MAP)", "NEW MAP (REGENERATE)", "AI ENEMIES",
-        "BOTS FIGHT EACH OTHER",
+        "WORLD (NEXT MAP)", "NEW MAP (REGENERATE)", "COPY MAP SEED",
+        "AI ENEMIES", "BOTS FIGHT EACH OTHER",
         "RESUME", "QUIT"
     };
     static const char* shadowNames[4] = { "OFF", "LOW", "HIGH", "ULTRA" };
@@ -258,7 +271,8 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
     for (int i = 0; i < MR_COUNT; i++) {
         Rectangle r = { rowX, rowY0 + (float)i * rowH, rowW, (float)rowH - 4 };
         bool selRow = (i == msel);
-        bool isButton = (i == MR_RESUME || i == MR_QUIT || i == MR_NEWMAP);
+        bool isButton = (i == MR_RESUME || i == MR_QUIT ||
+                         i == MR_NEWMAP || i == MR_COPYSEED);
         Color bg = selRow ? (Color){ 52, 58, 70, 255 } : (Color){ 34, 37, 44, 235 };
         if (isButton) {
             if (i == MR_QUIT)
@@ -274,10 +288,17 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
 
         if (isButton) {
             const char* bl = labels[i];
+            char copyLabel[64];
             Color bc = RAYWHITE;
             if (i == MR_NEWMAP) {
                 if (hostOnly) { bl = "NEW MAP - HOST ONLY"; bc = (Color){ 150, 152, 160, 230 }; }
                 else if (newMapArm) { bl = "CONFIRM NEW MAP - PRESS AGAIN"; bc = (Color){ 255, 232, 150, 255 }; }
+            } else if (i == MR_COPYSEED) {
+                if (g->world.mode == WORLD_CLASSIC || g->world.seed == 0)
+                    snprintf(copyLabel, sizeof(copyLabel), "COPY MAP SEED - CLASSIC");
+                else
+                    snprintf(copyLabel, sizeof(copyLabel), "COPY MAP SEED - %u", g->world.seed);
+                bl = copyLabel;
             }
             DrawText(bl, (int)(r.x + (r.width - MeasureText(bl, 24)) / 2), (int)r.y + 5, 24, bc);
             continue;
@@ -298,9 +319,11 @@ void UI_DrawPauseMenu(bool* paused, bool* shouldQuit, Game* g) {
         case MR_LIGHTS: snprintf(val, sizeof(val), "%s", g->set.pointLights ? "ON" : "OFF"); break;
         case MR_FOG: snprintf(val, sizeof(val), "%s", g->set.fog ? "ON" : "OFF"); break;
         case MR_WORLD: {
-            int wm = hostOnly ? (int)g->world.mode : g->set.worldMode;
+            int wm = hostOnly ? (int)g->world.mode : (int)g->nextWorldMode;
             if (wm < 0 || wm >= WORLD_MODE_COUNT) wm = 0;
-            snprintf(val, sizeof(val), "%s%s", worldNames[wm], hostOnly ? " (LIVE)" : "");
+            bool pending = !hostOnly && (WorldMode)wm != g->world.mode;
+            snprintf(val, sizeof(val), "%s%s", worldNames[wm],
+                     hostOnly ? " (LIVE)" : (pending ? " (PENDING)" : ""));
             break;
         }
         case MR_AI: snprintf(val, sizeof(val), "%s", hostOnly ? "HOST" : (g->set.aiEnabled ? "ON" : "OFF")); break;

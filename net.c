@@ -34,6 +34,7 @@ typedef struct __attribute__((packed)) {
     uint8_t worldMode;
     uint32_t worldSeed;
     uint32_t worldEpoch;
+    uint64_t worldHash;
 } PktWelcome;
 
 typedef struct __attribute__((packed)) {
@@ -47,6 +48,7 @@ typedef struct __attribute__((packed)) {
     uint8_t worldMode;
     uint32_t worldSeed;
     uint32_t worldEpoch;
+    uint64_t worldHash;
     uint8_t pcount;
     NetPlayerSnap players[NET_MAX_PLAYERS];
     uint8_t ecount;
@@ -161,11 +163,13 @@ float Net_SpawnYaw(int idx) {
     return atan2f(-p.x, -p.z); // face the map center
 }
 
-void Net_SetWorld(NetState* n, uint8_t mode, uint32_t seed, uint32_t epoch) {
+void Net_SetWorld(NetState* n, uint8_t mode, uint32_t seed, uint32_t epoch,
+                  uint64_t layoutHash) {
     if (!n) return;
     n->worldMode = mode;
     n->worldSeed = seed;
     n->worldEpoch = epoch;
+    n->worldHash = layoutHash;
 }
 
 void Net_ResetRound(NetState* n) {
@@ -464,6 +468,7 @@ static void host_send_welcome(NetState* n, const struct sockaddr_in* to, int id,
     pk.worldMode = n->worldMode;
     pk.worldSeed = n->worldSeed;
     pk.worldEpoch = n->worldEpoch;
+    pk.worldHash = n->worldHash;
     int cnt = 1;
     for (int i = 0; i < NET_MAX_PLAYERS; i++)
         if (n->peers[i].used && n->peers[i].id != n->myId) cnt++;
@@ -482,6 +487,7 @@ static void host_send_snapshot(NetState* n, const NetLocalState* me,
     pk.worldMode = n->worldMode;
     pk.worldSeed = n->worldSeed;
     pk.worldEpoch = n->worldEpoch;
+    pk.worldHash = n->worldHash;
 
     int idx = 0;
     NetPlayerSnap* s = &pk.players[idx++];
@@ -551,7 +557,8 @@ static void host_send_snapshot(NetState* n, const NetLocalState* me,
     // Wire format must be contiguous, but the struct has fixed-size arrays
     // (ecount/enemies sit after all four player slots in memory), so
     // serialize explicitly:
-    // [hdr][mode][seed][epoch][pcount][players...][ecount][enemies...][bmask][pmask]
+    // [hdr][mode][seed][epoch][hash][pcount][players...][ecount][enemies...]
+    // [bmask][pmask]
     uint8_t out[sizeof(PktSnapshot)];
     memcpy(out, &pk.h, sizeof(PktHdr));
     int o = (int)sizeof(PktHdr);
@@ -560,6 +567,8 @@ static void host_send_snapshot(NetState* n, const NetLocalState* me,
     o += (int)sizeof(pk.worldSeed);
     memcpy(out + o, &pk.worldEpoch, sizeof(pk.worldEpoch));
     o += (int)sizeof(pk.worldEpoch);
+    memcpy(out + o, &pk.worldHash, sizeof(pk.worldHash));
+    o += (int)sizeof(pk.worldHash);
     out[o++] = pk.pcount;
     memcpy(out + o, pk.players, (size_t)idx * sizeof(NetPlayerSnap));
     o += idx * (int)sizeof(NetPlayerSnap);
@@ -728,10 +737,11 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
             return;
         }
         if (wp.worldMode != n->worldMode || wp.worldSeed != n->worldSeed ||
-            wp.worldEpoch != n->worldEpoch) {
+            wp.worldEpoch != n->worldEpoch || wp.worldHash != n->worldHash) {
             n->worldMode = wp.worldMode;
             n->worldSeed = wp.worldSeed;
             n->worldEpoch = wp.worldEpoch;
+            n->worldHash = wp.worldHash;
             n->worldChanged = true;
         }
         if (!n->connected) {
@@ -742,8 +752,10 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
             n->reconnectTimer = 0.0f;
             n->pendingSpawn = wp.spawn;
             n->spawnApplied = false;
-            TraceLog(LOG_INFO, "NET: connected as id %d (players: %d) world=%u/%u",
-                     wp.id, wp.count, wp.worldMode, wp.worldEpoch);
+            TraceLog(LOG_INFO,
+                     "NET: connected as id %d (players: %d) world=%u/%u hash=%016llx",
+                     wp.id, wp.count, wp.worldMode, wp.worldEpoch,
+                     (unsigned long long)wp.worldHash);
             Net_Feed(n, "CONNECTED TO HOST");
         }
         break;
@@ -779,17 +791,21 @@ static void net_handle_packet(NetState* n, const struct sockaddr_in* from, const
         if (n->mode != NET_CLIENT) return;
         const uint8_t* q = buf + sizeof(PktHdr);
         int remain = len - (int)sizeof(PktHdr);
-        if (remain < 1 + (int)sizeof(uint32_t) * 2 + 1) return;
+        if (remain < 1 + (int)sizeof(uint32_t) * 2 +
+                     (int)sizeof(uint64_t) + 1) return;
         uint8_t worldMode = *q++;
         uint32_t worldSeed = 0, worldEpoch = 0;
+        uint64_t worldHash = 0;
         memcpy(&worldSeed, q, sizeof(worldSeed)); q += sizeof(worldSeed);
         memcpy(&worldEpoch, q, sizeof(worldEpoch)); q += sizeof(worldEpoch);
-        remain -= 1 + (int)sizeof(uint32_t) * 2;
+        memcpy(&worldHash, q, sizeof(worldHash)); q += sizeof(worldHash);
+        remain -= 1 + (int)sizeof(uint32_t) * 2 + (int)sizeof(uint64_t);
         if (worldMode != n->worldMode || worldSeed != n->worldSeed ||
-            worldEpoch != n->worldEpoch) {
+            worldEpoch != n->worldEpoch || worldHash != n->worldHash) {
             n->worldMode = worldMode;
             n->worldSeed = worldSeed;
             n->worldEpoch = worldEpoch;
+            n->worldHash = worldHash;
             n->worldChanged = true;
         }
         uint8_t pcount = *q++;

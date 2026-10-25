@@ -167,6 +167,18 @@ static void Enemy_PlayGunSound(const Audio* audio, const Enemy* e, float scale) 
     }
 }
 
+static bool Enemy_RequestNav(Enemy* e, const WorldMap* world, Vector3 goal) {
+    if (!world || !world->navReady) return false;
+    int n = World_NavPath(world, e->position, goal, e->navPath, ENEMY_NAV_POINTS);
+    if (n <= 0) return false;
+    e->navCount = n;
+    e->navIndex = 0;
+    e->navActive = true;
+    e->navGoal = goal;
+    e->navRepathTimer = 1.2f;
+    return true;
+}
+
 static Vector3 Enemy_Steer(Enemy* e, Vector3 wish, const Box* boxes, int boxCount) {
     float len = Vector3Length(wish);
     if (len < 0.01f) return wish;
@@ -348,9 +360,9 @@ static void Enemy_BeginReload(Enemy* e) {
 }
 
 void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
-                     const Box* boxes, int boxCount, float mapLimit,
-                     const Vector3* spawns, int spawnCount, Audio* audio, float dt,
-                     DamageIndicator* dmgInds, int maxDmgInds,
+                     const Box* boxes, int boxCount, const WorldMap* world,
+                     float mapLimit, const Vector3* spawns, int spawnCount,
+                     Audio* audio, float dt, DamageIndicator* dmgInds, int maxDmgInds,
                      float* damageFlashOut, float gameTime) {
     if (targetCount < 1) return;
     float ramp = 1.0f + ClampF(gameTime / 60.0f * 0.08f, 0.0f, 0.6f);
@@ -370,6 +382,8 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
         if (e->burstTimer > 0) e->burstTimer -= dt;
         if (e->dodgeTimer > 0) e->dodgeTimer -= dt;
         if (e->unstickTimer > 0) e->unstickTimer -= dt;
+        if (e->navRepathTimer > 0) e->navRepathTimer -= dt;
+        if (e->stuckLogTimer > 0) e->stuckLogTimer -= dt;
         if (e->suppressTimer > 0) e->suppressTimer -= dt;
         if (e->windupTimer > 0) e->windupTimer -= dt;
         if (e->gunKick > 0) e->gunKick -= dt * 2.6f;
@@ -453,6 +467,12 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
                     e->state = E_PATROL;
                     e->lastSeenPos = e->position;
                     e->suppressTimer = RandRange(0.5f, 1.5f);
+                    e->navActive = false;
+                    e->navCount = 0;
+                    e->navIndex = 0;
+                    e->navRepathTimer = 0;
+                    e->stuckTimer = 0;
+                    e->stuckLogTimer = 0;
                     Enemy_ResetGun(e);
                 }
             }
@@ -495,6 +515,9 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
 
         bool reactive = e->visibleTimer > (e->role == ROLE_MARKSMAN ? 0.45f : 0.22f);
         bool inShootRange = !dead && reactive && dist <= gunRange && los;
+        // Once a clean firing solution exists, local combat movement takes
+        // over again; the path is only for reaching around geometry.
+        if (e->navActive && inShootRange) e->navActive = false;
 
         // separation
         Vector3 sep = { 0 };
@@ -566,6 +589,7 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
 
         if (dead) {
             e->aimTimer = 0;
+            e->navActive = false;
             Vector3 toHome = Vector3Subtract(e->homePos, e->position);
             toHome.y = 0;
             if (Vector3Length(toHome) > 2.0f) { wish = Vector3Normalize(toHome); wantsMove = true; }
@@ -650,6 +674,33 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
             wantsMove = true;
         }
 
+        // Coarse path fallback. It deliberately overrides the normal chase
+        // wish only while there is no firing solution, so combat strafing and
+        // cover behavior remain unchanged.
+        if (e->navActive && (dead || e->state == E_COVER)) e->navActive = false;
+        if (e->navActive) {
+            if (e->navRepathTimer <= 0.0f) {
+                Vector3 goal = canSee ? player->position : e->lastSeenPos;
+                if (!Enemy_RequestNav(e, world, goal)) e->navActive = false;
+            }
+            while (e->navActive && e->navIndex < e->navCount) {
+                Vector3 wp = e->navPath[e->navIndex];
+                Vector3 d = { wp.x - e->position.x, 0, wp.z - e->position.z };
+                if (Vector3Length(d) > 1.05f) break;
+                e->navIndex++;
+            }
+            if (e->navIndex >= e->navCount) {
+                e->navActive = false;
+            } else {
+                Vector3 d = { e->navPath[e->navIndex].x - e->position.x, 0,
+                              e->navPath[e->navIndex].z - e->position.z };
+                if (Vector3Length(d) > 0.01f) {
+                    wish = Vector3Normalize(d);
+                    wantsMove = true;
+                }
+            }
+        }
+
         if (wantsMove && e->windupTimer <= 0) {
             float spd = ENEMY_SPEED * e->speedMul * ramp;
             if (e->state == E_STRAFE) spd *= 0.8f;
@@ -663,12 +714,33 @@ void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int target
             float moved = Vector3Distance(before, e->position);
             e->walkPhase += moved * 6.5f;
             if (moved < spd * dt * 0.22f) {
+                float prevStuck = e->stuckTimer;
                 e->stuckTimer += dt;
-                if (e->stuckTimer > 0.65f) {
-                    e->stuckTimer = 0;
+                if (prevStuck <= 0.65f && e->stuckTimer > 0.65f) {
                     e->strafeDir *= -1.0f;
                     Vector3 side = { -wish.z * e->strafeDir, 0, wish.x * e->strafeDir };
                     TryMove(e, Vector3Scale(side, spd * 0.6f), boxes, boxCount);
+                }
+                if (e->stuckTimer > 1.25f) {
+                    if (e->stuckLogTimer <= 0.0f) {
+                        TraceLog(LOG_INFO,
+                                 "AI STUCK: bot %d at (%.1f, %.1f) %.2fs nav=%s goal=(%.1f, %.1f)",
+                                 i, e->position.x, e->position.z, e->stuckTimer,
+                                 e->navActive ? "following" : "none",
+                                 e->lastSeenPos.x, e->lastSeenPos.z);
+                        e->stuckLogTimer = 4.0f;
+                    }
+                    if (!e->navActive) {
+                        Vector3 goal = e->alertTimer > 0.0f ? e->lastSeenPos : player->position;
+                        if (Enemy_RequestNav(e, world, goal))
+                            TraceLog(LOG_DEBUG, "AI NAV: bot %d path to (%.1f, %.1f), %d points",
+                                     i, goal.x, goal.z, e->navCount);
+                    } else {
+                        e->navRepathTimer = 0.0f;
+                    }
+                    // Retry soon if the path is also blocked, but do not spin
+                    // A* every frame while the bot is being squeezed.
+                    e->stuckTimer = 0.85f;
                 }
             } else e->stuckTimer = 0;
             // face movement when not in combat, face player in combat

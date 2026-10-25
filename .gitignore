@@ -1,0 +1,7 @@
+nga_strike_debug
+tests/test_world
+tests/test_sites
+tests/test_settings
+tests/test_enemy_nav
+tests/.check.ok
+tests/.settings_test.cfg

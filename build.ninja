@@ -1,4 +1,4 @@
-cflags = -Wall -Wextra -g -O2 -std=c99
+cflags = -Wall -Wextra -g -O2 -std=c99 -I.
 ldlibs = -lraylib -lm -lminiupnpc
 
 rule cc
@@ -6,15 +6,25 @@ rule cc
     description = CC $out
 
 rule cc_debug
-    command = cc -Wall -Wextra -g -O0 -std=c99 -DDEBUG $in -o $out $ldlibs
+    command = cc -Wall -Wextra -g -O0 -std=c99 -I. -DDEBUG $in -o $out $ldlibs
     description = CC-debug $out
 
 rule clean
     command = rm -f $out
     description = CLEAN $out
 
+rule run_tests
+    command = ./tests/run_tests.sh && touch $out
+    description = TEST regression suite
+
 build nga_strike: cc main.c game.c player.c weapon.c enemy.c pickup.c audio.c world.c ui.c fx.c damage_fx.c shadows.c settings.c net.c upnp.c
 build nga_strike_debug: cc_debug main.c game.c player.c weapon.c enemy.c pickup.c audio.c world.c ui.c fx.c damage_fx.c shadows.c settings.c net.c upnp.c
-build clean: clean nga_strike nga_strike_debug
+build tests/test_world: cc tests/test_world.c world.c
+build tests/test_sites: cc tests/test_sites.c world.c
+build tests/test_settings: cc tests/test_settings.c settings.c
+build tests/test_enemy_nav: cc tests/test_enemy_nav.c enemy.c world.c player.c audio.c damage_fx.c
+build tests/.check.ok: run_tests | tests/test_world tests/test_sites tests/test_settings tests/test_enemy_nav
+build check: phony tests/.check.ok
+build clean: clean nga_strike nga_strike_debug tests/test_world tests/test_sites tests/test_settings tests/test_enemy_nav tests/.check.ok
 
 default nga_strike

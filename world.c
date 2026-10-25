@@ -1328,6 +1328,317 @@ static void World_Random_Attempt(WorldMap* map, WorldMode mode, uint32_t seed, i
              map->pickupCount, map->barrelCount, map->streetLampCount);
 }
 
+// ---------------------------------------------------------------------------
+// Layout checksum, bot navigation grid and A* fallback
+// ---------------------------------------------------------------------------
+
+static uint64_t HashBytes(uint64_t h, const void* data, size_t n) {
+    const unsigned char* p = (const unsigned char*)data;
+    for (size_t i = 0; i < n; i++) {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static uint64_t HashU32(uint64_t h, uint32_t v) {
+    return HashBytes(h, &v, sizeof(v));
+}
+
+static uint64_t HashF32(uint64_t h, float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return HashU32(h, bits);
+}
+
+static uint64_t HashVec3(uint64_t h, Vector3 v) {
+    h = HashF32(h, v.x);
+    h = HashF32(h, v.y);
+    return HashF32(h, v.z);
+}
+
+uint64_t World_LayoutHash(const WorldMap* map) {
+    if (!map) return 0;
+    uint64_t h = 14695981039346656037ULL;
+    h = HashU32(h, (uint32_t)map->mode);
+    h = HashU32(h, map->seed);
+    h = HashF32(h, map->limit);
+    h = HashU32(h, (uint32_t)map->boxCount);
+    for (int i = 0; i < map->boxCount; i++) {
+        h = HashVec3(h, map->boxes[i].center);
+        h = HashVec3(h, map->boxes[i].halfExtents);
+    }
+    for (int i = 0; i < WORLD_MAX_PLAYER_SPAWNS; i++)
+        h = HashVec3(h, map->playerSpawns[i]);
+    h = HashU32(h, (uint32_t)map->enemySpawnCount);
+    for (int i = 0; i < map->enemySpawnCount; i++)
+        h = HashVec3(h, map->enemySpawns[i]);
+    h = HashU32(h, (uint32_t)map->barrelCount);
+    for (int i = 0; i < map->barrelCount; i++)
+        h = HashVec3(h, map->barrelSpots[i]);
+    h = HashU32(h, (uint32_t)map->pickupCount);
+    for (int i = 0; i < map->pickupCount; i++) {
+        h = HashVec3(h, map->pickupSpots[i]);
+        h = HashU32(h, (uint32_t)map->pickupTypes[i]);
+    }
+    h = HashU32(h, (uint32_t)map->streetLampCount);
+    for (int i = 0; i < map->streetLampCount; i++)
+        h = HashVec3(h, map->streetLamps[i]);
+    h = HashU32(h, (uint32_t)map->accentLampCount);
+    for (int i = 0; i < map->accentLampCount; i++)
+        h = HashVec3(h, map->accentLamps[i]);
+    h = HashU32(h, (uint32_t)map->siteCount);
+    for (int i = 0; i < map->siteCount; i++)
+        h = HashU32(h, (uint32_t)map->siteKinds[i]);
+    for (int i = 0; i < 4; i++)
+        h = HashF32(h, map->cityCoords[i]);
+    h = HashF32(h, map->cityBlockHalf);
+    h = HashF32(h, map->cityRoadHalf);
+    h = HashF32(h, map->cityEdgeRoad);
+    return h;
+}
+
+// Rasterize the collision geometry into the coarse grid. This is O(box area),
+// not O(cells * boxes), which keeps map generation cheap even on 256x256.
+static void World_BuildNav(WorldMap* map) {
+    memset(map->navBlocked, 0, sizeof(map->navBlocked));
+    map->navCell = (map->limit * 2.0f) / (float)WORLD_NAV_DIM;
+    map->navReady = false;
+    if (map->limit <= 0.01f || map->navCell <= 0.01f) return;
+
+    const float origin = -map->limit;
+    const float radius = 0.38f;
+    for (int i = 0; i < map->boxCount; i++) {
+        const Box* b = &map->boxes[i];
+        float top = b->center.y + b->halfExtents.y;
+        float bottom = b->center.y - b->halfExtents.y;
+        if (top <= 0.0f || bottom >= 1.80f) continue; // overhead canopy/roof
+        float minX = b->center.x - b->halfExtents.x - radius;
+        float maxX = b->center.x + b->halfExtents.x + radius;
+        float minZ = b->center.z - b->halfExtents.z - radius;
+        float maxZ = b->center.z + b->halfExtents.z + radius;
+        int x0 = (int)ceilf((minX - origin) / map->navCell - 0.5f);
+        int x1 = (int)floorf((maxX - origin) / map->navCell - 0.5f);
+        int z0 = (int)ceilf((minZ - origin) / map->navCell - 0.5f);
+        int z1 = (int)floorf((maxZ - origin) / map->navCell - 0.5f);
+        if (x0 < 0) x0 = 0;
+        if (z0 < 0) z0 = 0;
+        if (x1 >= WORLD_NAV_DIM) x1 = WORLD_NAV_DIM - 1;
+        if (z1 >= WORLD_NAV_DIM) z1 = WORLD_NAV_DIM - 1;
+        for (int z = z0; z <= z1; z++) {
+            float cz = origin + ((float)z + 0.5f) * map->navCell;
+            for (int x = x0; x <= x1; x++) {
+                float cx = origin + ((float)x + 0.5f) * map->navCell;
+                if (cx >= minX && cx <= maxX && cz >= minZ && cz <= maxZ)
+                    map->navBlocked[z * WORLD_NAV_DIM + x] = 1;
+            }
+        }
+    }
+    map->navReady = true;
+}
+
+static bool NavCellBlocked(const WorldMap* map, int x, int z) {
+    if (!map || !map->navReady) return true;
+    if (x < 0 || z < 0 || x >= WORLD_NAV_DIM || z >= WORLD_NAV_DIM) return true;
+    return map->navBlocked[z * WORLD_NAV_DIM + x] != 0;
+}
+
+static void NavWorldToCell(const WorldMap* map, Vector3 p, int* outX, int* outZ) {
+    float cell = map->navCell;
+    int x = (int)floorf((p.x + map->limit) / cell);
+    int z = (int)floorf((p.z + map->limit) / cell);
+    if (x < 0) x = 0;
+    if (z < 0) z = 0;
+    if (x >= WORLD_NAV_DIM) x = WORLD_NAV_DIM - 1;
+    if (z >= WORLD_NAV_DIM) z = WORLD_NAV_DIM - 1;
+    *outX = x;
+    *outZ = z;
+}
+
+static bool NavNearestOpen(const WorldMap* map, int cx, int cz, int* outX, int* outZ) {
+    if (!NavCellBlocked(map, cx, cz)) {
+        *outX = cx;
+        *outZ = cz;
+        return true;
+    }
+    for (int r = 1; r <= 8; r++) {
+        int best = -1;
+        int bestD = 0;
+        for (int z = cz - r; z <= cz + r; z++) {
+            for (int x = cx - r; x <= cx + r; x++) {
+                if (x < 0 || z < 0 || x >= WORLD_NAV_DIM || z >= WORLD_NAV_DIM) continue;
+                if (x > cx - r && x < cx + r && z > cz - r && z < cz + r) continue;
+                if (NavCellBlocked(map, x, z)) continue;
+                int d = (x - cx) * (x - cx) + (z - cz) * (z - cz);
+                if (best < 0 || d < bestD) {
+                    best = z * WORLD_NAV_DIM + x;
+                    bestD = d;
+                }
+            }
+        }
+        if (best >= 0) {
+            *outX = best % WORLD_NAV_DIM;
+            *outZ = best / WORLD_NAV_DIM;
+            return true;
+        }
+    }
+    return false;
+}
+
+static float NavG[WORLD_NAV_NODES];
+static int NavCame[WORLD_NAV_NODES];
+static unsigned char NavClosed[WORLD_NAV_NODES];
+static int NavHeap[WORLD_NAV_NODES * 8];
+static int NavHeapCount;
+static int NavGoalNode;
+
+static float NavHeuristic(int a, int b) {
+    int ax = a % WORLD_NAV_DIM, az = a / WORLD_NAV_DIM;
+    int bx = b % WORLD_NAV_DIM, bz = b / WORLD_NAV_DIM;
+    int dx = ax > bx ? ax - bx : bx - ax;
+    int dz = az > bz ? az - bz : bz - az;
+    int mn = dx < dz ? dx : dz;
+    int mx = dx > dz ? dx : dz;
+    return (float)(mx - mn) + 1.41421356f * (float)mn;
+}
+
+static void NavHeapPush(int id) {
+    int i = NavHeapCount++;
+    while (i > 0) {
+        int parent = (i - 1) / 2;
+        int a = NavHeap[parent];
+        float fa = NavG[a] + NavHeuristic(a, NavGoalNode);
+        float fb = NavG[id] + NavHeuristic(id, NavGoalNode);
+        if (fa < fb || (fa == fb && a < id)) break;
+        NavHeap[i] = a;
+        i = parent;
+    }
+    NavHeap[i] = id;
+}
+
+static int NavHeapPop(void) {
+    int top = NavHeap[0];
+    int last = NavHeap[--NavHeapCount];
+    int i = 0;
+    while (true) {
+        int child = i * 2 + 1;
+        if (child >= NavHeapCount) break;
+        if (child + 1 < NavHeapCount) {
+            int a = NavHeap[child], b = NavHeap[child + 1];
+            float fa = NavG[a] + NavHeuristic(a, NavGoalNode);
+            float fb = NavG[b] + NavHeuristic(b, NavGoalNode);
+            if (fb < fa || (fb == fa && b < a)) child++;
+        }
+        int a = NavHeap[child];
+        float fa = NavG[a] + NavHeuristic(a, NavGoalNode);
+        float fl = NavG[last] + NavHeuristic(last, NavGoalNode);
+        if (fl < fa || (fl == fa && last < a)) break;
+        NavHeap[i] = a;
+        i = child;
+    }
+    if (NavHeapCount > 0) NavHeap[i] = last;
+    return top;
+}
+
+static bool NavSegmentClear(const WorldMap* map, Vector3 a, Vector3 b) {
+    float dx = b.x - a.x, dz = b.z - a.z;
+    float dist = sqrtf(dx * dx + dz * dz);
+    int steps = (int)(dist / (map->navCell * 0.35f)) + 1;
+    for (int i = 1; i < steps; i++) {
+        float t = (float)i / (float)steps;
+        int cx, cz;
+        NavWorldToCell(map, (Vector3){ a.x + dx * t, 0.9f, a.z + dz * t }, &cx, &cz);
+        if (NavCellBlocked(map, cx, cz)) return false;
+    }
+    return true;
+}
+
+int World_NavPath(const WorldMap* map, Vector3 from, Vector3 to,
+                  Vector3* outPath, int maxPoints) {
+    if (!map || !map->navReady || !outPath || maxPoints <= 0) return 0;
+    int sx, sz, gx, gz;
+    NavWorldToCell(map, from, &sx, &sz);
+    NavWorldToCell(map, to, &gx, &gz);
+    if (!NavNearestOpen(map, sx, sz, &sx, &sz)) return 0;
+    if (!NavNearestOpen(map, gx, gz, &gx, &gz)) return 0;
+    int start = sz * WORLD_NAV_DIM + sx;
+    int goal = gz * WORLD_NAV_DIM + gx;
+    if (start == goal) return 0;
+
+    for (int i = 0; i < WORLD_NAV_NODES; i++) {
+        NavG[i] = 1e30f;
+        NavCame[i] = -1;
+        NavClosed[i] = 0;
+    }
+    NavHeapCount = 0;
+    NavGoalNode = goal;
+    NavG[start] = 0.0f;
+    NavHeapPush(start);
+
+    static const int dx[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+    static const int dz[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    bool found = false;
+    while (NavHeapCount > 0) {
+        int cur = NavHeapPop();
+        if (NavClosed[cur]) continue;
+        NavClosed[cur] = 1;
+        if (cur == goal) { found = true; break; }
+        int cx = cur % WORLD_NAV_DIM, cz = cur / WORLD_NAV_DIM;
+        for (int d = 0; d < 8; d++) {
+            int nx = cx + dx[d], nz = cz + dz[d];
+            if (NavCellBlocked(map, nx, nz)) continue;
+            if (dx[d] && dz[d] &&
+                (NavCellBlocked(map, cx + dx[d], cz) ||
+                 NavCellBlocked(map, cx, cz + dz[d]))) continue;
+            int ni = nz * WORLD_NAV_DIM + nx;
+            if (NavClosed[ni]) continue;
+            float step = (dx[d] && dz[d]) ? 1.41421356f : 1.0f;
+            float ng = NavG[cur] + step;
+            if (ng >= NavG[ni]) continue;
+            NavG[ni] = ng;
+            NavCame[ni] = cur;
+            NavHeapPush(ni);
+        }
+    }
+    if (!found) return 0;
+
+    static int nodes[WORLD_NAV_NODES];
+    int nodeCount = 0;
+    for (int n = goal; n >= 0 && nodeCount < WORLD_NAV_NODES; n = NavCame[n])
+        nodes[nodeCount++] = n;
+    // nodes are goal..start; reverse to start..goal for smoothing.
+    static Vector3 raw[WORLD_NAV_NODES];
+    int rawCount = 0;
+    for (int i = nodeCount - 1; i >= 0; i--) {
+        int n = nodes[i];
+        int x = n % WORLD_NAV_DIM, z = n / WORLD_NAV_DIM;
+        raw[rawCount++] = (Vector3){
+            -map->limit + ((float)x + 0.5f) * map->navCell, 0.9f,
+            -map->limit + ((float)z + 0.5f) * map->navCell,
+        };
+    }
+
+    int outCount = 0;
+    int anchor = 0;
+    while (anchor < rawCount - 1 && outCount < maxPoints) {
+        int next = rawCount - 1;
+        while (next > anchor + 1 && !NavSegmentClear(map, raw[anchor], raw[next]))
+            next--;
+        if (next <= anchor) break;
+        outPath[outCount++] = raw[next];
+        anchor = next;
+    }
+    if (outCount > 0) {
+        Vector3 last = outPath[outCount - 1];
+        if (NavSegmentClear(map, last, to) &&
+            !World_MoveCollides((Vector3){ to.x, 0.9f, to.z },
+                                (Vector3){ 0.35f, 0.9f, 0.35f },
+                                map->boxes, map->boxCount))
+            outPath[outCount - 1] = (Vector3){ to.x, 0.9f, to.z };
+    }
+    return outCount;
+}
+
 static void World_Random(WorldMap* map, WorldMode mode, uint32_t seed) {
     World_Random_Attempt(map, mode, seed, 0);
     map->seed = seed ? seed : 1u;
@@ -1338,11 +1649,17 @@ void World_Generate(WorldMap* map, WorldMode mode, uint32_t seed) {
     if (mode == WORLD_CLASSIC) {
         memset(map, 0, sizeof(*map));
         World_Classic(map);
-        TraceLog(LOG_INFO, "WORLD: classic layout (%d boxes, %d pickups)", map->boxCount, map->pickupCount);
+        World_BuildNav(map);
+        TraceLog(LOG_INFO, "WORLD: classic layout (%d boxes, %d pickups) hash=%016llx",
+                 map->boxCount, map->pickupCount,
+                 (unsigned long long)World_LayoutHash(map));
         return;
     }
     if (mode != WORLD_RANDOM && mode != WORLD_RANDOM_256) mode = WORLD_RANDOM;
     World_Random(map, mode, seed);
+    World_BuildNav(map);
+    TraceLog(LOG_INFO, "WORLD: layout hash=%016llx",
+             (unsigned long long)World_LayoutHash(map));
 }
 
 bool World_MoveCollides(Vector3 pos, Vector3 half, const Box* boxes, int count) {

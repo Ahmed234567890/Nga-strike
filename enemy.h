@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "audio.h"
+#include "world.h"
 
 typedef struct {
     bool killed;
@@ -27,9 +28,9 @@ void Enemy_InitAll(Enemy* enemies, int count, const Vector3* spawns, int spawnCo
 // respawn timers. All-off: despawn everything and stop (no corpses, no spawns).
 void Enemy_SetActiveAll(Enemy* enemies, int count, bool active);
 void Enemy_UpdateAll(Enemy* enemies, int count, EnemyTarget* targets, int targetCount,
-                     const Box* boxes, int boxCount, float mapLimit,
-                     const Vector3* spawns, int spawnCount, Audio* audio, float dt,
-                     DamageIndicator* dmgInds, int maxDmgInds,
+                     const Box* boxes, int boxCount, const WorldMap* world,
+                     float mapLimit, const Vector3* spawns, int spawnCount,
+                     Audio* audio, float dt, DamageIndicator* dmgInds, int maxDmgInds,
                      float* damageFlashOut, float gameTime);
 void Enemy_DrawAll(const Enemy* enemies, int count, Vector3 playerPos,
                    Vector3 camPos, Vector3 camFwd, float time, bool fakeBlobs);

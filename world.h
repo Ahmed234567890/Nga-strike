@@ -18,6 +18,12 @@
 #define WORLD_MAX_PEBBLES      120
 #define WORLD_MAX_SITES         16
 
+// Coarse navigation grid used by bots when direct steering gets stuck. It is
+// derived from the collision boxes, never serialized, and rebuilt with the map.
+#define WORLD_NAV_DIM          128
+#define WORLD_NAV_NODES        (WORLD_NAV_DIM * WORLD_NAV_DIM)
+#define WORLD_NAV_MAX_POINTS    96
+
 typedef enum {
     WORLD_CLASSIC = 0,
     WORLD_RANDOM = 1,
@@ -72,11 +78,27 @@ typedef struct {
     float     cityEdgeRoad;
     unsigned char siteKinds[WORLD_MAX_SITES];
     int       siteCount;
+
+    // Coarse walkability raster for bot path fallback. navCell is the world
+    // size of one cell; cell centers are at -limit + (index + 0.5) * navCell.
+    unsigned char navBlocked[WORLD_NAV_NODES];
+    float     navCell;
+    bool      navReady;
 } WorldMap;
 
 // Deterministically build a map. The same mode+seed always produces the exact
 // same boxes, spawns, loot and scenery on host and client.
 void World_Generate(WorldMap* map, WorldMode mode, uint32_t seed);
+
+// FNV-1a over the gameplay-relevant layout. Hosts send this in welcome and
+// snapshot metadata so clients can detect a deterministic-generation mismatch.
+uint64_t World_LayoutHash(const WorldMap* map);
+
+// Coarse A* fallback for bots. Returns the number of waypoints written to
+// outPath (0 means already at the goal). The path excludes the start point and
+// ends at the goal (or the nearest walkable cell to it).
+int World_NavPath(const WorldMap* map, Vector3 from, Vector3 to,
+                  Vector3* outPath, int maxPoints);
 
 // Lit group: ground, props, boxes and generated scenery.
 void World_DrawLit(const WorldMap* map, float time, Vector3 camPos);

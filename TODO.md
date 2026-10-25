@@ -155,20 +155,50 @@
       shadows, Intel UHD): 256 map ~170 AI / ~170 no-AI FPS, 100 map ~144 AI
       FPS, Classic ~82 FPS; close-range combat ~136–154 FPS
 
+## Phase 14: Layout Verification, Bot Unstuck Navigation & Seed Sharing ✅ DONE
+- [x] Added a 64-bit FNV-1a `World_LayoutHash` over collision geometry, spawns,
+      barrels, pickups/types, lamps, site kinds and city metadata; log it on
+      every generation, `NEW MAP` and remote-map apply
+- [x] Host sends `worldHash` in welcome and snapshots; clients compare after
+      rebuilding and log/feed `MAP HASH MISMATCH` on divergence, including
+      hash-only changes with an unchanged epoch
+- [x] Added a 128×128 static walkability grid, 8-way A* with no corner cutting,
+      nearest-open snapping and line-of-sight waypoint smoothing
+- [x] Bots log `AI STUCK` after 1.25 s of blocked local steering, request a
+      path, follow it while they have no firing solution, repath after 1.2 s and
+      drop it on combat/cover/death
+- [x] Fixed pending world selection: `WORLD (NEXT MAP)` stages
+      `Game.nextWorldMode`; only `NEW MAP` changes the active map and saves
+      `nga.cfg`. Quitting with a pending selection restores the previous map
+- [x] Added **`COPY MAP SEED`** (clipboard) and `--world` / `--seed` startup
+      overrides with aliases, range validation and Classic/seed handling
+- [x] Moved the 120-seed city/content harness, site sweep, settings checks and
+      bot stuck/nav regression into `tests/`; `ninja check` builds and runs all
+      four binaries
+- [x] Verified: all tests pass, `test_world`/`test_enemy_nav` clean under
+      ASan+UBSan; pending selection discard/restart; copied seed
+      `1600455712` reproduced hash `6023b67dacd06ba7`; host/client and late
+      join/reconnect all matched live remap hash `9d27a1377438f022`; no
+      `NEW MAP` or config write occurred before confirmation
+
 ## Open Items
 - [ ] **G1: Enemies are pinned to the ground** — `enemy.c` forces y ≈ 0.9 every
       frame, so enemies can't stand on platforms/raised geometry (they clip it).
       Needs a design pass plus on-platform visual testing.
-- [ ] **Bot navigation is steering, not pathfinding** — bots probe for walls and
-      wall-follow, which handles city corners but can still hesitate in deep
-      U-shaped sites or when a gate is off their approach line. A waypoint graph
-      or coarse nav grid is the next step if city layouts grow more complex.
-- [ ] **Keep the map generator under regression test in-repo** — the 120-seed
-      reachability/content harness and site-coverage checks currently live in
-      `/tmp`. Move them into the repository (or CI) so future site-builder edits
-      cannot silently drop archetypes again.
-- [ ] **Expose/share the random-map seed** — the seed is persisted and synced,
-      but there is no UI to copy or enter a specific seed for repeatable matches.
+- [ ] **Bot navigation still uses static geometry only** — the 128×128 A* grid
+      is rasterized from map collision boxes. Barrels, players and other dynamic
+      obstacles are not included, and the fallback is only requested after
+      local steering fails for 1.25 s. A dynamic/flow-field layer would be the
+      next step if bots need to path around movable cover.
+- [ ] **In-game text entry for map seeds** — seeds can be copied from the menu
+      and supplied with `--seed` at startup, but there is no field to type or
+      paste a seed into a running game.
+- [ ] **Protocol version negotiation** — the world-hash fields changed the UDP
+      layout, so old/new binaries do not interoperate. A version field in the
+      handshake could reject mismatched builds instead of dropping packets.
+- [ ] **Hash-mismatch recovery** — a client logs and feeds the mismatch but
+      keeps its locally generated map; it does not retry generation or block
+      play. Decide whether a future protocol should hard-fail the connection.
 - [ ] **Custom keybinds** (leftover from Phase 5) — controls are fixed in code.
 - [ ] **Optional join password for internet hosting** (deferred from Phase 9) —
       a shared secret in the HELLO, rejected on mismatch; empty = open like today.

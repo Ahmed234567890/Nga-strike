@@ -153,6 +153,7 @@ typedef struct {
     uint8_t  worldMode;
     uint32_t worldSeed;
     uint32_t worldEpoch;
+    uint64_t worldHash;      // deterministic layout checksum from the host
     bool     worldChanged;   // client: welcome/snapshot announced a new map
     // one-shot "fired since last state" bit for remote muzzle events
     bool   pendingShot;
@@ -184,7 +185,8 @@ int   Net_AlivePeers(const NetState* n);
 Vector3 Net_SpawnPos(int spawnIdx);
 float Net_SpawnYaw(int spawnIdx);
 void  Net_SetSpawnLayout(const Vector3* spawns, int count);
-void  Net_SetWorld(NetState* n, uint8_t mode, uint32_t seed, uint32_t epoch);
+void  Net_SetWorld(NetState* n, uint8_t mode, uint32_t seed, uint32_t epoch,
+                   uint64_t layoutHash);
 void  Net_ResetRound(NetState* n);
 Color Net_PlayerColor(int id);
 void  Net_Feed(NetState* n, const char* text);

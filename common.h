@@ -141,6 +141,8 @@ typedef enum {
     HIT_HELMET = 3,
 } HitZone;
 
+#define ENEMY_NAV_POINTS 96
+
 typedef struct {
     Vector3 position;   // center (y ~= 0.9)
     Vector3 spawnPoint;
@@ -180,6 +182,14 @@ typedef struct {
     float   unstickTimer;
     Vector3 lastPos;
     float   stuckTimer;
+    // Coarse A* fallback: only used after local steering fails repeatedly.
+    Vector3 navPath[ENEMY_NAV_POINTS];
+    int     navCount;
+    int     navIndex;
+    bool    navActive;
+    Vector3 navGoal;
+    float   navRepathTimer;
+    float   stuckLogTimer;
     Vector3 lastSeenPos;   // where the player was last spotted (AI v2)
     float   suppressTimer; // suppression-fire cooldown (AI v2)
     int     seed;

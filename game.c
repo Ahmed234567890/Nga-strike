@@ -86,9 +86,11 @@ static void Game_LoadWorldEntities(Game* g) {
     Net_SetSpawnLayout(g->world.playerSpawns, WORLD_MAX_PLAYER_SPAWNS);
 }
 
-void Game_Init(Game* g) {
+void Game_Init(Game* g, const Settings* initialSettings) {
     memset(g, 0, sizeof(*g));
-    Settings_Load(&g->set, "nga.cfg");
+    if (initialSettings) g->set = *initialSettings;
+    else Settings_Load(&g->set, "nga.cfg");
+    g->nextWorldMode = (WorldMode)g->set.worldMode;
     Player_Init(&g->player);
     Weapon_Init(g->weapons, WEAPON_COUNT);
     g->curWeapon = 0;
@@ -124,7 +126,8 @@ void Game_Init(Game* g) {
 
     // LAN multiplayer bring-up (no-op when launched without --host/--join)
     Net_Init(&g->net);
-    Net_SetWorld(&g->net, (uint8_t)g->world.mode, g->world.seed, g->worldEpoch);
+    Net_SetWorld(&g->net, (uint8_t)g->world.mode, g->world.seed, g->worldEpoch,
+                 World_LayoutHash(&g->world));
     Game_LoadWorldEntities(g);
     Game_BakeLampShadows(g);
 
@@ -200,32 +203,48 @@ void Game_NewMap(Game* g, WorldMode mode, uint32_t seed) {
         mode = WORLD_CLASSIC;
     World_Generate(&g->world, mode, seed);
     g->worldEpoch++;
+    g->nextWorldMode = mode;
     g->set.worldMode = (int)mode;
     g->set.worldSeed = g->world.seed ? g->world.seed : 1u;
     Settings_Save(&g->set, "nga.cfg");
-    Net_SetWorld(&g->net, (uint8_t)mode, g->world.seed, g->worldEpoch);
+    uint64_t hash = World_LayoutHash(&g->world);
+    Net_SetWorld(&g->net, (uint8_t)mode, g->world.seed, g->worldEpoch, hash);
     Game_LoadWorldEntities(g);
     Game_BakeLampShadows(g);
     Game_ResetRoundState(g, 0);
-    TraceLog(LOG_INFO, "NEW MAP: mode=%d seed=%u epoch=%u (%d boxes, %d loot)",
-             (int)mode, g->world.seed, g->worldEpoch, g->world.boxCount, g->world.pickupCount);
+    TraceLog(LOG_INFO, "NEW MAP: mode=%d seed=%u epoch=%u (%d boxes, %d loot) hash=%016llx",
+             (int)mode, g->world.seed, g->worldEpoch, g->world.boxCount,
+             g->world.pickupCount, (unsigned long long)hash);
 }
 
-void Game_ApplyRemoteWorld(Game* g, int mode, uint32_t seed, uint32_t epoch) {
+void Game_ApplyRemoteWorld(Game* g, int mode, uint32_t seed, uint32_t epoch,
+                           uint64_t expectedHash) {
     if (g->net.mode != NET_CLIENT) return;
     if (mode < 0 || mode >= WORLD_MODE_COUNT) mode = 0;
-    if (g->world.mode == (WorldMode)mode && g->world.seed == seed && g->worldEpoch == epoch)
+    if (g->world.mode == (WorldMode)mode && g->world.seed == seed &&
+        g->worldEpoch == epoch &&
+        (expectedHash == 0 || World_LayoutHash(&g->world) == expectedHash))
         return;
     World_Generate(&g->world, (WorldMode)mode, seed);
     g->worldEpoch = epoch;
+    g->nextWorldMode = (WorldMode)mode;
     g->net.worldMode = (uint8_t)mode;
     g->net.worldSeed = seed;
     g->net.worldEpoch = epoch;
+    uint64_t hash = World_LayoutHash(&g->world);
+    if (expectedHash != 0 && hash != expectedHash) {
+        TraceLog(LOG_WARNING,
+                 "REMOTE MAP HASH MISMATCH: mode=%d seed=%u epoch=%u host=%016llx local=%016llx",
+                 mode, seed, epoch, (unsigned long long)expectedHash,
+                 (unsigned long long)hash);
+        Net_Feed(&g->net, "MAP HASH MISMATCH");
+    }
     Game_LoadWorldEntities(g);
     Game_BakeLampShadows(g);
     Game_ResetRoundState(g, Game_LocalSpawnIndex(g));
-    TraceLog(LOG_INFO, "REMOTE MAP: mode=%d seed=%u epoch=%u (%d boxes, %d loot)",
-             mode, seed, epoch, g->world.boxCount, g->world.pickupCount);
+    TraceLog(LOG_INFO, "REMOTE MAP: mode=%d seed=%u epoch=%u (%d boxes, %d loot) hash=%016llx",
+             mode, seed, epoch, g->world.boxCount, g->world.pickupCount,
+             (unsigned long long)hash);
 }
 
 static BoundingBox BarrelBox(const Barrel* b) {
@@ -897,9 +916,10 @@ void Game_Update(Game* g, float dt) {
         }
         for (int k = 0; k < nt; k++) beforeHp[k] = tgts[k].player->health;
         Enemy_UpdateAll(g->enemies, MAX_ENEMIES, tgts, nt,
-                        g->world.boxes, g->world.boxCount, g->world.limit,
-                        g->world.enemySpawns, g->world.enemySpawnCount,
-                        &g->audio, dt, g->dmgInds, MAX_DAMAGE_INDICATORS,
+                        g->world.boxes, g->world.boxCount, &g->world,
+                        g->world.limit, g->world.enemySpawns,
+                        g->world.enemySpawnCount, &g->audio, dt,
+                        g->dmgInds, MAX_DAMAGE_INDICATORS,
                         &g->damageFlash, g->gameTime);
         for (int k = 0; k < nt; k++) {
             float dealt = beforeHp[k] - tgts[k].player->health;
@@ -1018,7 +1038,8 @@ void Game_Update(Game* g, float dt) {
                    g->pickups, g->world.pickupCount, g->barrels, MAX_BARRELS);
         if (g->net.mode == NET_CLIENT && g->net.worldChanged) {
             g->net.worldChanged = false;
-            Game_ApplyRemoteWorld(g, g->net.worldMode, g->net.worldSeed, g->net.worldEpoch);
+            Game_ApplyRemoteWorld(g, g->net.worldMode, g->net.worldSeed,
+                                  g->net.worldEpoch, g->net.worldHash);
             g->net.spawnApplied = true;
             g->net.pendingSpawn = Game_LocalSpawnIndex(g);
         }

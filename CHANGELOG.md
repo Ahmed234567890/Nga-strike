@@ -4,6 +4,137 @@ Newest first. **Every meaningful change or event gets an entry here** — featur
 fixes, bugs found, tests, design decisions, regressions and process changes.
 Documentation rules live in [`AGENTS.md`](AGENTS.md).
 
+## 2026-10-25
+
+### Layout verification, bot unstuck navigation, seed sharing and in-repo tests
+
+#### Layout identity and host/client verification
+
+- Added `World_LayoutHash`, a 64-bit FNV-1a checksum over the gameplay-relevant
+  layout: mode, seed, playable limit, every collision box center/half-extent,
+  all player and enemy spawns, barrels, pickups with their types, street and
+  accent lamps, site kinds/count and the city grid metadata. Cosmetic colours
+  are deliberately excluded. The hash is logged for every generated map, live
+  remap and remote map.
+- Added `worldHash` to `PktWelcome` and `PktSnapshot`; `Net_SetWorld` now carries
+  it. Clients record the host hash when connecting and compare it after
+  generating the host's mode/seed/epoch. A match logs the same hash on both
+  sides; a mismatch logs `REMOTE MAP HASH MISMATCH` with both values and feeds
+  `MAP HASH MISMATCH` to the client overlay. A hash-only difference also counts
+  as a world change, so a client rebuilds even when mode/seed/epoch match.
+- This changes the UDP wire format. Old and new binaries are **not compatible**;
+  rebuild the host and every client together.
+
+#### Pending world selection and restart fix
+
+- Added `Game.nextWorldMode`. The **`WORLD (NEXT MAP)`** row now only stages a
+  selection: it displays `(PENDING)` and leaves the live map and `nga.cfg`
+  untouched until **`NEW MAP`** is confirmed. Previously changing the row wrote
+  `world` to the config immediately, so a restart without regenerating could
+  load a different map from the one that had been on screen.
+- **`NEW MAP`** now consumes the pending mode, generates the new seed, saves the
+  active mode/seed, advances the epoch and resets the round. A pending selection
+  that was never applied is intentionally discarded on restart.
+- Added **`COPY MAP SEED`** to the menu (after `NEW MAP`). It copies the current
+  random map's numeric seed to the system clipboard and logs
+  `MAP SEED <n> copied to clipboard`. Classic has no seed and reports
+  `MAP SEED: classic layout has no seed` instead of copying a misleading value.
+  In multiplayer the action also feeds `MAP SEED COPIED` / `CLASSIC MAP - NO SEED`.
+- Verified the restart rule with a clean temp config: started `random100` seed
+  `42` (hash `f647d74a35fa8bf6`), selected `RANDOM 256` which showed
+  `(PENDING)`, confirmed `nga.cfg` stayed `world 1` / `worldseed 42` and no
+  `NEW MAP` was logged, quit through the menu, then relaunched. The second run
+  generated `random100` seed `42` again with the same hash, logged no
+  `NEW MAP`, and the menu showed `RANDOM 100` with no pending marker and
+  `COPY MAP SEED - 42`.
+- Verified seed sharing on a live `random256` seed `1600455712`
+  (hash `6023b67dacd06ba7`): `COPY MAP SEED` put `1600455712` on the clipboard,
+  and restarting with `--world random256 --seed 1600455712` reproduced the same
+  hash.
+
+#### Bot stuck instrumentation and coarse A* fallback
+
+- Added a 128×128 walkability raster to every `WorldMap` (`navCell` is 0.75 m
+  on the 100 map and 2 m on the 256 map). It is rasterized directly from
+  collision boxes with a 0.38 m body radius, ignores overhead roofs/canopies,
+  and is rebuilt with the map; it is never serialized.
+- Added `World_NavPath`: 8-way A* with no diagonal corner cutting, nearest-open
+  cell snapping, line-of-sight path smoothing and a 96-waypoint cap. The path
+  excludes the start and ends at the goal when that point is clear.
+- Bots still use local steering and wall-following first. If a bot moves less
+  than 22% of its expected step for 1.25 s, it logs `AI STUCK` (throttled to once
+  per 4 s), requests an A* path to its last-seen/known goal and follows the
+  smoothed waypoints. It repaths after 1.2 s, drops the path when it gains a
+  firing solution or enters cover/death, and only overrides the normal chase
+  wish while it has no firing solution, preserving combat strafing. A debug
+  `AI NAV` line reports the path target and waypoint count.
+- Verified with `tests/test_enemy_nav`: a bot facing a dead-end corridor logs
+  `AI STUCK: bot 0 ... 1.27s nav=none`, activates the fallback, follows 3
+  waypoints and reaches `z=-6.9` behind the wall; an open-field bot moves 1.68 m
+  without ever requesting navigation.
+
+#### In-repo regression suite
+
+- Added four test binaries under `tests/` (no `/tmp` dependencies):
+  `test_world`, `test_sites`, `test_settings` and `test_enemy_nav`, plus
+  `tests/run_tests.sh`. `ninja check` builds and runs all four; `ninja clean`
+  removes their binaries and the sentinel. Added `-I.` to the build flags so the
+  tests compile from the repo layout. Added `.gitignore` entries for the debug
+  binary, test binaries, sentinel and temporary test config.
+- `test_world`: Classic hash is fixed at `b15336a866fa6517` and ignores the
+  random seed; six fixed random hashes are checked (`random100` seeds 1, 42,
+  123456789 and `random256` seeds 1, 42, 123456789); a 120-city sweep (60 per
+  mode) checks deterministic regeneration, content bounds, pickup types,
+  nav-grid density, BFS reachability of every spawn/loot/barrel/lamp, A* path
+  waypoints and endpoints; seed 0 normalizes to seed 1; editing a collision box,
+  pickup or player spawn changes the hash.
+- `test_sites`: 80 seeds per mode (2000 sites total), every block receives a
+  site, all kinds 0..7 appear, each site owns at least 7 low collision boxes,
+  and site kinds are deterministic on regeneration.
+- `test_settings`: defaults, float `sens`/`volume` and high-seed round-trip,
+  missing/empty config, invalid-value sanitising, unknown keys and sparse files.
+- `test_enemy_nav`: the dead-end and open-field cases above; it captures and
+  asserts the `AI STUCK` log.
+- `ninja check` passes all four tests. `test_world` and `test_enemy_nav` also
+  pass under ASan+UBSan (`-fsanitize=address,undefined`) with no sanitizer
+  errors; leak detection was left off because raylib keeps process-global state.
+  Exact results: 120 deterministic city seeds OK; 720 small + 1280 large sites,
+  observed minimum 7 boxes/site (the test asserts at least 2); settings
+  round-trip OK; 223 nav frames / 3 waypoints in the dead end and 1.68 m of
+  open-field movement without nav.
+
+#### Network and playtest verification
+
+- Host `--host 7788 --no-upnp --world random100 --seed 42` logged
+  `layout hash=f647d74a35fa8bf6`; a client started on Classic, connected as id 2
+  with `hash=f647d74a35fa8bf6`, generated the host map and logged
+  `REMOTE MAP ... hash=f647d74a35fa8bf6`.
+- Live host remap to `random256` seed `1194348036`, epoch 2 generated
+  `layout hash=9d27a1377438f022`; the connected client applied the same epoch,
+  seed and hash without reconnecting.
+- A late-join client started on local `random100` seed `1`
+  (hash `251345f5a3e7cbb1`), connected as id 3 and immediately applied the live
+  `9d27a1377438f022` map. After the client was killed and timed out, it
+  relaunched, reconnected as id 3 and again applied the same live map/hash.
+- Earlier playtest: `--world random100 --seed 42` produced
+  `f647d74a35fa8bf6`; `NEW MAP` from a pending `RANDOM 256` produced seed
+  `1600455712`, epoch 2, hash `6023b67dacd06ba7`. All 16 menu rows fit at
+  1280×720. `nga.cfg` was kept local and was not committed.
+
+#### Test-process notes
+
+- Synthetic XTEST key events were unreliable under Xwayland on this desktop:
+  the first pending-restart attempt did not open the menu even with input focus
+  on the game window. The test harness switched to direct X `SendEvent`
+  key events, which reproduced normal menu navigation reliably.
+- Multiple playtest windows were stacked at the same screen coordinates, so
+  synthetic clicks/keys could hit the wrong instance. The host/client instances
+  were stopped before the final restart test. The first host remap attempt
+  clicked the wrong menu rows and did nothing; the corrected local coordinates
+  (window-relative, not root-relative) produced the verified remap.
+- `pgrep` briefly matched the shell wrapper instead of the game process; window
+  lookup by `_NET_WM_PID` is the reliable way to target a specific instance.
+
 ## 2026-10-21
 
 ### Deterministic city maps, distinct AI guns, world sync and render culling

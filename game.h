@@ -13,6 +13,7 @@ typedef struct {
     Weapon weapons[WEAPON_COUNT];
     int curWeapon;
     WorldMap world;
+    WorldMode nextWorldMode;   // menu selection; only NEW MAP applies it
     uint32_t worldEpoch;
     Enemy enemies[MAX_ENEMIES];
     Barrel barrels[MAX_BARRELS];
@@ -83,7 +84,10 @@ typedef struct {
     NetState net;
 } Game;
 
-void Game_Init(Game* g);
+// initialSettings may be NULL to load nga.cfg inside Game_Init. main() loads
+// the file first so command-line world/seed overrides are applied before the
+// startup map is generated.
+void Game_Init(Game* g, const Settings* initialSettings);
 void Game_Update(Game* g, float dt);
 void Game_Draw(Game* g);
 void Game_Unload(Game* g);
@@ -95,6 +99,7 @@ void Game_SetAIActive(Game* g, bool active);
 // Rebuild the arena and reset the round. Used by NEW MAP (host/single-player)
 // and by clients when the host's map epoch changes.
 void Game_NewMap(Game* g, WorldMode mode, uint32_t seed);
-void Game_ApplyRemoteWorld(Game* g, int mode, uint32_t seed, uint32_t epoch);
+void Game_ApplyRemoteWorld(Game* g, int mode, uint32_t seed, uint32_t epoch,
+                           uint64_t expectedHash);
 
 #endif
